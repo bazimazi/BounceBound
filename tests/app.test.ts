@@ -208,6 +208,62 @@ describe('the application boots and every screen renders', () => {
     game.stop();
   });
 
+  it('keeps panels sparse rather than text-heavy', async () => {
+    // A guard on the complaint that the interface read as a web app. These are
+    // density budgets, not exact values: they should fail if someone reintroduces
+    // a paragraph per card or a description per journal entry.
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+    const game = new Game(canvas, overlay);
+    game.start();
+    frames.runFrames(1);
+
+    // Main menu: only the selected ball spells out its full description.
+    const ballParagraphs = overlay.querySelectorAll('.bb-ball p');
+    expect(ballParagraphs.length).toBeLessThanOrEqual(1);
+
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Begin descent'))!.click();
+    frames.runFrames(4);
+    const run = game.currentRun!;
+    for (const enemy of [...run.world.enemies]) run.world.killEnemy(enemy, 'other', null);
+    for (let i = 0; i < 400 && run.phase === 'playing'; i++) frames.runFrames(4);
+    frames.runFrames(3);
+
+    if (run.phase === 'reward') {
+      const cards = [...overlay.querySelectorAll('.bb-card')];
+      expect(cards.length).toBeGreaterThan(0);
+      for (const card of cards) {
+        // Name, effect, maybe a cost and two stat deltas. Not an essay.
+        expect((card.textContent ?? '').length).toBeLessThan(260);
+        expect(card.querySelectorAll('.bb-card-stats li').length).toBeLessThanOrEqual(2);
+      }
+    }
+
+    game.stop();
+  });
+
+  it('renders the journal as a dense name list, not a reference manual', async () => {
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+    const game = new Game(canvas, overlay);
+    game.start();
+    frames.runFrames(1);
+
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Journal'))!.click();
+    frames.runFrames(2);
+
+    const entries = [...overlay.querySelectorAll('.bb-entry')];
+    expect(entries.length).toBeGreaterThan(80);
+    // Detail belongs in the tooltip, so entries stay short and scannable.
+    const withLongText = entries.filter((e) => (e.textContent ?? '').length > 60);
+    expect(withLongText.length).toBe(0);
+    const withTooltip = entries.filter((e) => (e.getAttribute('title') ?? '').length > 0);
+    expect(withTooltip.length).toBeGreaterThan(entries.length * 0.5);
+    game.stop();
+  });
+
   it('persists settings and progress across game instances', async () => {
     const frames = installFrameStub();
     const { canvas, overlay } = mountDom();

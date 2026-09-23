@@ -1,17 +1,23 @@
 /**
  * Upgrade cards.
  *
- * The brief's requirement is exact: name, effect, and important context, with no
- * paragraphs. So a card is four lines at most -
+ * A card is a decision, not a document. Playtesting was blunt about the first
+ * version: too much text, and it made the game look like a web app. So a card now
+ * carries at most four short lines -
  *
- *   NAME              rarity colour, family tag
- *   effect            one or two short sentences, in the player's language
+ *   NAME              coloured by rarity
+ *   effect            one or two short sentences
  *   cost              only when there is one, in warning colour
- *   context           either a synergy this would complete, or a soft hint
+ *   SYNERGY           only when this card completes one
  *
- * The synergy line is the important one. When a card would complete a synergy the
- * player is one piece away from, the card says so explicitly. That is what turns
- * "pick the biggest number" into "pick the thing that finishes my build".
+ * Deliberately cut: the rarity spelled out in words (the colour and the border
+ * already say it), the family label, the soft flavour hint, and the long stat
+ * list. Numbers are shown as at most two compact deltas, and everything else moved
+ * into the tooltip for players who want it.
+ *
+ * The synergy line is the one addition worth its space. When a card would complete
+ * a synergy the player is one piece away from, saying so turns "pick the biggest
+ * number" into "pick the thing that finishes my build".
  */
 
 import { RARITY_COLORS } from '../content/ids';
@@ -42,6 +48,9 @@ export function upgradeCard(options: CardOptions): HTMLElement {
   const completes = completedSynergies(def, build);
   const disabled = options.price !== undefined && options.affordable === false;
 
+  // The tooltip carries what the card deliberately omits, for players who want it.
+  const tooltip = [def.text, def.cost, def.hint, `${def.family} - ${def.rarity}`].filter(Boolean).join('\n');
+
   const node = el(
     'button',
     {
@@ -49,30 +58,24 @@ export function upgradeCard(options: CardOptions): HTMLElement {
       type: 'button',
       style: `--rarity:${RARITY_COLORS[def.rarity]}`,
       disabled,
+      title: tooltip,
       ariaLabel: `${def.name}. ${def.text}`,
     },
     [
       el('header', {}, [
         el('span', { class: 'bb-card-name', text: def.name }),
-        el('span', { class: 'bb-card-family', text: def.family }),
-      ]),
-      el('div', { class: 'bb-card-meta' }, [
-        el('span', { class: 'bb-card-rarity', text: def.rarity }),
-        stacks > 0 ? el('span', { class: 'bb-card-stacks', text: `held x${stacks}` }) : null,
+        stacks > 0 ? el('span', { class: 'bb-card-stacks', text: `x${stacks}` }) : null,
         options.isNew ? el('span', { class: 'bb-card-new', text: 'NEW' }) : null,
       ]),
       el('p', { class: 'bb-card-text', text: def.text }),
       def.cost ? el('p', { class: 'bb-card-cost', text: def.cost }) : null,
-      // Stat deltas, but only the ones a player would actually act on.
       statSummary(def),
       options.showSynergyHints && completes.length > 0
-        ? el('p', { class: 'bb-card-synergy', text: `Completes: ${completes.map((s) => s.name).join(', ')}` })
-        : def.hint
-          ? el('p', { class: 'bb-card-hint', text: def.hint })
-          : null,
+        ? el('p', { class: 'bb-card-synergy', text: `COMPLETES ${completes.map((s) => s.name).join(' + ')}` })
+        : null,
       options.price !== undefined
         ? el('footer', { class: `bb-card-price${options.affordable === false ? ' bb-unaffordable' : ''}` }, [
-            `${options.price} shards`,
+            `${options.price}`,
           ])
         : el('footer', { class: 'bb-card-key' }, [`${options.index + 1}`]),
     ],
@@ -107,14 +110,13 @@ export function completedSynergies(def: UpgradeDef, build: BuildState): Array<{ 
 }
 
 /**
- * A compact stat summary.
+ * A compact stat summary: at most two entries, largest effect first.
  *
- * Deliberately limited to four entries and to stats whose change is large enough
- * to matter. A card that lists eleven tiny modifiers is a spreadsheet, not a
- * decision.
+ * A card that lists eleven modifiers is a spreadsheet, not a decision. Two is
+ * enough to convey the shape of a trade-off; the tooltip has the rest.
  */
 function statSummary(def: UpgradeDef): HTMLElement | null {
-  const entries: Array<{ key: StatKey; text: string; good: boolean }> = [];
+  const entries: Array<{ key: StatKey; text: string; good: boolean; magnitude: number }> = [];
 
   for (const [key, value] of Object.entries(def.flat ?? {})) {
     const typed = key as StatKey;
@@ -125,6 +127,9 @@ function statSummary(def: UpgradeDef): HTMLElement | null {
       key: typed,
       text: `${value > 0 ? '+' : ''}${formatStat(typed, value)} ${spec.label.toLowerCase()}`,
       good,
+      // Normalised against the stat's own span so a +45 health and a +0.12 crit
+      // chance are comparable when deciding which two to show.
+      magnitude: Math.abs(value) / Math.max(1e-6, spec.max - spec.min),
     });
   }
   for (const [key, value] of Object.entries(def.mult ?? {})) {
@@ -134,12 +139,18 @@ function statSummary(def: UpgradeDef): HTMLElement | null {
     const percent = Math.round((value - 1) * 100);
     if (Math.abs(percent) < 4) continue;
     const good = spec.inverted ? percent < 0 : percent > 0;
-    entries.push({ key: typed, text: `${percent > 0 ? '+' : ''}${percent}% ${spec.label.toLowerCase()}`, good });
+    entries.push({
+      key: typed,
+      text: `${percent > 0 ? '+' : ''}${percent}% ${spec.label.toLowerCase()}`,
+      good,
+      magnitude: Math.abs(percent) / 100,
+    });
   }
 
   if (entries.length === 0) return null;
-  // Show the largest-magnitude effects first, capped so the card stays scannable.
-  const shown = entries.slice(0, 4);
+  // Largest-magnitude effects first, hard-capped so the card stays scannable.
+  entries.sort((a, b) => b.magnitude - a.magnitude);
+  const shown = entries.slice(0, 2);
   return el(
     'ul',
     { class: 'bb-card-stats' },

@@ -51,6 +51,12 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
   const maxBound = profile.maxBoundLevel();
   const history = profile.data.history.slice(-3).reverse();
 
+  /**
+   * Ball selection is a row of names and one-line identities, with the full
+   * description, trade-off and starting upgrade shown only for the selected one.
+   * Printing all of that for nine classes at once was the single worst offender in
+   * making the menu read as a web page rather than a game.
+   */
   const ballCards = unlockedBalls.map((ballClass) => {
     const selected = host.draft.ballId === ballClass.id;
     const node = el(
@@ -59,15 +65,16 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
         class: `bb-ball${selected ? ' bb-ball-selected' : ''}`,
         type: 'button',
         style: `--ball:${ballClass.color};--ball-accent:${ballClass.accent}`,
+        title: `${ballClass.description}\n${ballClass.cost}`,
       },
       [
         el('span', { class: 'bb-ball-dot' }),
         el('div', {}, [
           el('strong', { text: ballClass.name }),
           el('em', { text: ballClass.tagline }),
-          el('p', { text: ballClass.description }),
-          el('small', { class: 'bb-bad', text: ballClass.cost }),
-          ballClass.startingUpgrade
+          selected ? el('p', { text: ballClass.description }) : null,
+          selected ? el('small', { class: 'bb-bad', text: ballClass.cost }) : null,
+          selected && ballClass.startingUpgrade
             ? el('small', { class: 'bb-note', text: `Starts with ${getUpgradeName(ballClass.startingUpgrade)}` })
             : null,
         ]),
@@ -101,8 +108,14 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
             lockedBalls.length > 0
               ? el('div', { class: 'bb-locked' }, [
                   el('h4', { text: `${lockedBalls.length} more to find` }),
-                  ...lockedBalls.map((ballClass) =>
-                    el('p', {}, [el('strong', { text: '???' }), ' - ', ballClass.unlockHint ?? 'Hidden']),
+                  // Silhouettes only, with the requirement in the tooltip. The count
+                  // creates the curiosity; a wall of unlock conditions does not.
+                  el(
+                    'div',
+                    { class: 'bb-silhouettes' },
+                    lockedBalls.map((ballClass) =>
+                      el('span', { class: 'bb-silhouette', title: ballClass.unlockHint ?? 'Hidden', text: '?' }),
+                    ),
                   ),
                 ])
               : null,
@@ -235,14 +248,16 @@ export function renderUnlocks(root: HTMLElement, host: MenuHost): void {
             class: `bb-unlock${owned ? ' bb-unlock-owned' : check.ok ? ' bb-unlock-ready' : ' bb-unlock-locked'}`,
             type: 'button',
             disabled: owned || !check.ok,
-            title: check.reason,
+            title: `${node.description}${check.reason ? `\n\n${check.reason}` : ''}`,
           },
           [
             el('header', {}, [
               el('strong', { text: node.name }),
               el('span', { text: max > 1 ? `${ranks}/${max}` : owned ? 'owned' : `${nodeCost(node, ranks)}` }),
             ]),
-            el('p', { text: node.description }),
+            // Description only when it is actually purchasable or owned; locked
+            // nodes show a name and a cost, which is all the decision needs.
+            check.ok || owned ? el('p', { text: node.description }) : null,
             !owned ? el('small', { class: check.ok ? 'bb-good' : 'bb-bad', text: check.ok ? `${check.cost} echoes` : check.reason }) : null,
           ],
         );
@@ -281,65 +296,72 @@ export function renderJournal(root: HTMLElement, host: MenuHost): void {
   const profile = host.profile;
   const catalogue = upgradeCatalogue();
 
-  const upgradeList = catalogue.map((def) => {
-    const found = profile.hasDiscovered('upgrades', def.id);
-    return el('div', { class: `bb-entry${found ? '' : ' bb-entry-hidden'}`, style: `--rarity:${RARITY_COLORS[def.rarity]}` }, [
-      el('strong', { text: found ? def.name : '???' }),
-      el('small', { text: found ? def.text : `${def.family} - ${def.rarity}` }),
-      found && def.cost ? el('small', { class: 'bb-bad', text: def.cost }) : null,
-    ]);
-  });
+  /**
+   * Journal entries are names in a dense grid, with the detail in the tooltip.
+   *
+   * The previous version printed a full description for all 79 upgrades plus every
+   * enemy, boss, synergy and achievement at once. That is a reference document, and
+   * it was the reason the interface felt like a web app. A collection screen's job
+   * is to show how much exists and how much you have found; the detail is a
+   * hover away.
+   */
+  const entry = (name: string, detail: string, found: boolean, extra?: Node | null, rarity?: string): HTMLElement =>
+    el(
+      'div',
+      {
+        class: `bb-entry${found ? '' : ' bb-entry-hidden'}`,
+        title: detail,
+        style: rarity ? `--rarity:${rarity}` : undefined,
+      },
+      [el('strong', { text: found ? name : '???' }), extra ?? null],
+    );
 
-  const enemyList = ENEMY_DEFS.map((def) => {
-    const found = profile.hasDiscovered('enemies', def.id);
-    return el('div', { class: `bb-entry${found ? '' : ' bb-entry-hidden'}` }, [
-      el('strong', { text: found ? def.name : '???' }),
-      el('small', { text: found ? def.approach : 'Not yet encountered' }),
-    ]);
-  });
+  const upgradeList = catalogue.map((def) =>
+    entry(
+      def.name,
+      profile.hasDiscovered('upgrades', def.id) ? [def.text, def.cost].filter(Boolean).join('\n') : 'Undiscovered',
+      profile.hasDiscovered('upgrades', def.id),
+      null,
+      RARITY_COLORS[def.rarity],
+    ),
+  );
 
-  const bossList = BOSS_DEFS.map((def) => {
-    const found = profile.hasDiscovered('bosses', def.id);
-    return el('div', { class: `bb-entry${found ? '' : ' bb-entry-hidden'}` }, [
-      el('strong', { text: found ? def.name : '???' }),
-      el('small', { text: found ? def.approach : `Guards the ${getBiomeName(def.biome)}` }),
-      found ? el('small', { class: 'bb-note', text: def.lore }) : null,
-    ]);
-  });
+  const enemyList = ENEMY_DEFS.map((def) =>
+    entry(def.name, profile.hasDiscovered('enemies', def.id) ? def.approach : 'Not yet encountered', profile.hasDiscovered('enemies', def.id)),
+  );
 
-  const synergyList = SYNERGY_DEFS.map((def) => {
-    const found = profile.hasDiscovered('synergies', def.id);
-    return el('div', { class: `bb-entry${found ? '' : ' bb-entry-hidden'}` }, [
-      el('strong', { text: found ? def.name : '???' }),
-      el('small', { text: found ? def.description : `Combine ${def.requiresAll.length} specific upgrades` }),
-    ]);
-  });
+  const bossList = BOSS_DEFS.map((def) =>
+    entry(
+      def.name,
+      profile.hasDiscovered('bosses', def.id) ? `${def.approach}\n\n${def.lore}` : `Guards the ${getBiomeName(def.biome)}`,
+      profile.hasDiscovered('bosses', def.id),
+    ),
+  );
 
-  const eventList = EVENT_DEFS.map((def) => {
-    const found = profile.hasDiscovered('events', def.discoveryId);
-    return el('div', { class: `bb-entry${found ? '' : ' bb-entry-hidden'}` }, [
-      el('strong', { text: found ? def.name : '???' }),
-      el('small', { text: found ? def.text : 'Somewhere on a route' }),
-    ]);
-  });
+  const synergyList = SYNERGY_DEFS.map((def) =>
+    entry(
+      def.name,
+      profile.hasDiscovered('synergies', def.id) ? def.description : `Combine ${def.requiresAll.length} specific upgrades`,
+      profile.hasDiscovered('synergies', def.id),
+    ),
+  );
 
-  const biomeList = BIOME_DEFS.map((def) => {
-    const found = profile.hasDiscovered('biomes', def.id);
-    return el('div', { class: `bb-entry${found ? '' : ' bb-entry-hidden'}` }, [
-      el('strong', { text: found ? def.name : '???' }),
-      el('small', { text: found ? def.rules : 'Undiscovered depth' }),
-    ]);
-  });
+  const eventList = EVENT_DEFS.map((def) =>
+    entry(def.name, profile.hasDiscovered('events', def.discoveryId) ? def.text : 'Somewhere on a route', profile.hasDiscovered('events', def.discoveryId)),
+  );
 
+  const biomeList = BIOME_DEFS.map((def) =>
+    entry(def.name, profile.hasDiscovered('biomes', def.id) ? def.rules : 'Undiscovered depth', profile.hasDiscovered('biomes', def.id)),
+  );
+
+  // Achievements keep their progress bar: it is the actionable part.
   const achievementList = ACHIEVEMENT_DEFS.map((def) => {
     const done = profile.isAchieved(def.id);
     const progress = profile.achievementProgress(def);
     const hidden = def.secret && !done;
-    return el('div', { class: `bb-entry${done ? ' bb-entry-done' : ''}` }, [
+    return el('div', { class: `bb-entry${done ? ' bb-entry-done' : ''}`, title: hidden ? def.hint ?? 'Hidden' : def.description }, [
       el('strong', { text: hidden ? '???' : def.name }),
-      el('small', { text: hidden ? def.hint ?? 'Hidden' : def.description }),
       !done && !hidden ? bar(progress.fraction, '#6aa8f0', `${progress.current}/${progress.target}`) : null,
-      done && def.echoes ? el('small', { class: 'bb-good', text: `+${def.echoes} echoes` }) : null,
     ]);
   });
 

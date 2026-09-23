@@ -116,11 +116,16 @@ export function slider(options: {
   return el('label', { class: 'bb-field' }, [el('span', { text: options.label }), input, readout]);
 }
 
+/**
+ * A toggle. The optional hint goes in the tooltip rather than under the label:
+ * a settings page with an explanatory paragraph per row reads as a web form, and
+ * the labels are written to stand on their own.
+ */
 export function toggle(options: { label: string; value: boolean; hint?: string; onChange: (value: boolean) => void }): HTMLElement {
   const input = el('input', { type: 'checkbox', checked: options.value, ariaLabel: options.label });
   input.addEventListener('change', () => options.onChange(input.checked));
-  return el('label', { class: 'bb-field bb-field-toggle' }, [
-    el('span', {}, [options.label, options.hint ? el('small', { text: options.hint }) : null]),
+  return el('label', { class: 'bb-field bb-field-toggle', title: options.hint }, [
+    el('span', { text: options.label }),
     input,
   ]);
 }

@@ -404,9 +404,8 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
         ? section(
             'Unlocked',
             achievements.map((result) =>
-              el('div', { class: 'bb-unlock-row' }, [
+              el('div', { class: 'bb-unlock-row', title: result.def.description }, [
                 el('strong', { text: result.def.name }),
-                el('span', { text: result.def.description }),
                 result.echoes ? el('em', { text: `+${result.echoes} echoes` }) : null,
               ]),
             ),
@@ -426,8 +425,9 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
           : el('p', { class: 'bb-note', text: 'No synergies came together this time.' }),
       ]),
 
+      // Damage breakdown is bars, not prose: the shape is the information.
       section('What hurt you', [
-        ...damageEntries.map(([source, amount]) =>
+        ...damageEntries.slice(0, 4).map(([source, amount]) =>
           el('div', { class: 'bb-damage-row' }, [
             el('span', { text: causeText(source) }),
             bar(amount / totalTaken, '#ff4d6a', `${Math.round(amount)}`),
@@ -435,7 +435,7 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
         ),
         el('p', {
           class: 'bb-note',
-          text: `Run time ${formatDuration(telemetry.durationSeconds)} - ${telemetry.impacts} impacts - ${telemetry.perfectBounces} perfect`,
+          text: `${formatDuration(telemetry.durationSeconds)} - ${telemetry.impacts} impacts - ${telemetry.perfectBounces} perfect`,
         }),
       ]),
 

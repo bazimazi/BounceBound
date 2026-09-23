@@ -44,9 +44,16 @@ than not pressing at all.
 **Velocity is damage.** Impact damage scales with impact speed against a reference
 of 700 u/s. That single rule turns physical decisions into combat decisions:
 diving before a hit, preserving momentum through a ricochet, or braking for
-control are all damage choices. The floor guarantees a rebound of 950 u/s — about
-a third of the arena's height — so you are always back in useful airspace, and
-diving suppresses that guarantee, which is how you choose to stay low.
+control are all damage choices.
+
+Three rules keep that from becoming chaos. The floor guarantees a rebound of
+780 u/s — a bit over a fifth of the arena height — so you are always back in
+useful airspace. **Diving suppresses that guarantee**, which is how you choose to
+stay low or drop off a platform. And **walls return less energy than floors**,
+because a wall should redirect the ball, not accelerate it; horizontal speed also
+bleeds continuously unless you are actively steering. Ricochet builds buy the wall
+energy back through upgrades, so amplification is something you choose rather than
+something you suffer.
 
 ## Architecture
 
@@ -133,15 +140,30 @@ npm run balance 60 0   # 60 bot-played runs at Bound 0: win rates, death causes,
 npm run pacing         # per-room clear times by archetype, slowest rooms, and
                        # which enemies dominate the slow quartile
 npm run soak           # hunts unreachable states across hundreds of rooms
+npx tsx tools/diagnose-feel.ts   # quantifies "how bouncy is it": average and peak
+                       # speed, lateral speed, wall contacts per second
 ```
 
 A deliberately mediocre bot drives these. Things it found that no unit test would
 have, all of which are fixed:
 
-- The guaranteed minimum rebound was 300 u/s, which lifts the ball 21 units. Once
-  the ball bled off energy it was trapped on the floor and could not reach anything
-  above it. This was the single worst bug in the project and it was invisible from
-  reading the code.
+- The guaranteed minimum rebound has a narrow good range, and both ends are wrong
+  in ways only measurement shows. At 300 u/s it lifts the ball 21 units, so a ball
+  that had bled off energy was trapped on the floor and rooms became unclearable. At
+  950 it kept total speed above 900 u/s a quarter of the time, which playtesting
+  described as too bouncy to enjoy. It now sits at 780, verified with a dedicated
+  feel probe.
+- Wall contacts returned nearly all incoming speed, so a corner acted as an
+  amplifier and the ball ping-ponged sideways uncontrollably. Vertical surfaces now
+  absorb energy and lateral speed bleeds while coasting.
+- Flying enemies had no arena containment and would slowly drift thousands of units
+  outside the room, permanently unreachable. They also pinned themselves against
+  pillars between them and the player, so they now steer around obstacles — with the
+  raycast throttled, because casting per enemy per 240 Hz step took a soak run from
+  fourteen seconds to six minutes.
+- An enemy wedged where a pillar meets the floor oscillated forever between two
+  de-penetration solutions. Overlaps are now resolved together, with a guaranteed
+  escape search as a last resort.
 - The combo meter could be pinned at its cap by idle wall-tapping, making the
   multiplier a baseline rather than a reward. Surface bounces now grant combo only
   when they are perfect.
@@ -156,6 +178,19 @@ have, all of which are fixed:
   until the process ran out of memory.
 - Static hazards accounted for 60% of all damage taken — chip damage rather than
   situational difficulty.
+
+## Interface
+
+Panels are deliberately sparse. Playtesting said the first version read as a web
+app rather than a game, so: cards carry a name, one effect line, a cost if there is
+one, and at most two stat deltas; the journal is a dense grid of names; the ball
+select spells out only the chosen class; and settings hints live in tooltips. Detail
+is always one hover away, never printed for every entry at once.
+
+Visually the shape does the work rather than the colour — clipped corners instead of
+rounded, uppercase tracked headings, oversized tabular numerals, and fully restyled
+range and checkbox controls, since a native slider is the strongest "settings page"
+signal there is. Two tests enforce density budgets so the text cannot creep back.
 
 ## Accessibility
 

@@ -52,6 +52,10 @@ import type { World } from './world';
 
 /** Skin width keeps the ball a hair off the surface to avoid re-contact jitter. */
 const SKIN = 0.6;
+/** Energy returned by vertical surfaces, relative to the material's own value. */
+const WALL_RESTITUTION_SCALE = 0.74;
+/** How much speed *along* a wall survives the contact. */
+const WALL_TANGENT_SCALE = 0.9;
 /** Maximum substeps; at legal speeds four is plenty, the cap is a safety net. */
 const MAX_SUBSTEPS = 10;
 
@@ -497,14 +501,29 @@ function finishImpact(world: World, ctx: ImpactContext, bounceBonus: number, dt:
     ball.y += ctx.ny * 0.5;
   } else {
     if (ctx.reboundTag === 'normal') {
-      const restitution = material.restitution * stats.restitution + bounceBonus;
+      let restitution = material.restitution * stats.restitution + bounceBonus;
       let tangentRetention = material.tangentRetention;
-      if (ctx.surface === 'wall') {
-        // Wall rebounds are scaled by their own stat so Ricochet builds can
-        // specialise in them without making floors feel bouncy.
-        tangentRetention *= 1;
+
+      /**
+       * Walls and ceilings return less energy than floors.
+       *
+       * The floor is the trampoline that keeps the game alive, and it has the
+       * minimum-rebound guarantee to prove it. Vertical surfaces are the opposite:
+       * they should redirect the ball, not accelerate it. Returning nearly all of
+       * the incoming speed made a corner into an amplifier, which read to players
+       * as the ball being uncontrollably bouncy sideways.
+       *
+       * The `wallBouncePower` stat scales this back up, so Ricochet builds still
+       * get to specialise in exactly this interaction - they just have to choose it
+       * rather than receive it by default.
+       */
+      if (ctx.surface === 'wall' || ctx.surface === 'ceiling') {
+        restitution *= WALL_RESTITUTION_SCALE;
+        tangentRetention *= WALL_TANGENT_SCALE;
       }
+
       applyReflection(ctx, Math.max(0.12, restitution) * stats.momentumRetention, tangentRetention);
+
       if (ctx.surface === 'wall' && stats.wallBouncePower !== 1) {
         ctx.outVx *= stats.wallBouncePower;
         ctx.outVy *= stats.wallBouncePower;

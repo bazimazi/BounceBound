@@ -264,8 +264,11 @@ export function updateEnemy(enemy: Enemy, def: EnemyDef, world: World, dt: numbe
   switch (def.ai) {
     case 'swarm': {
       const follow = def.params.followStrength ?? 130;
-      enemy.vx = damp(enemy.vx, (toBallX / distToBall) * follow, 2.2, dt);
-      enemy.vy = damp(enemy.vy, (toBallY / distToBall) * follow, 2.2, dt);
+      // Steer around anything between the swarm and the player, or the group pins
+      // itself against the far side of a pillar and can never be reached.
+      const heading = world.steerAroundObstacle(enemy, toBallX / distToBall, toBallY / distToBall);
+      enemy.vx = damp(enemy.vx, heading.x * follow, 2.2, dt);
+      enemy.vy = damp(enemy.vy, heading.y * follow, 2.2, dt);
       // A little per-enemy wobble keeps clusters from collapsing into one point,
       // which would remove the chain-reaction fantasy.
       const wob = enemy.id * 0.7;
@@ -330,10 +333,23 @@ export function updateEnemy(enemy: Enemy, def: EnemyDef, world: World, dt: numbe
       break;
     }
     case 'hover': {
-      const targetY = enemy.scratch.homeY - 0;
+      /**
+       * Flyers hunt the player's altitude rather than holding a fixed height.
+       *
+       * A flyer parked above the ball's reach is not a challenge, it is a
+       * stalemate - and lowering the guaranteed floor rebound made more of the
+       * upper room unreachable by a single bounce. Easing the hover target toward
+       * the ball, clamped near its spawn height, keeps flyers feeling like they
+       * occupy the air while guaranteeing they eventually come within reach.
+       */
+      const home = enemy.scratch.homeY;
+      const desired = clamp(ball.y - 70, home - 150, home + 210);
+      enemy.scratch.hoverTarget = damp(enemy.scratch.hoverTarget ?? home, desired, 0.55, dt);
+      const targetY = enemy.scratch.hoverTarget;
       const hoverY = targetY + Math.sin(enemy.age * 1.4 + enemy.id) * 18;
-      enemy.vy = damp(enemy.vy, (hoverY - enemy.y) * 2.4, 6, dt);
-      enemy.vx = damp(enemy.vx, Math.cos(enemy.age * 0.9 + enemy.id) * 55, 3, dt);
+      const drift = world.steerAroundObstacle(enemy, toBallX / distToBall, toBallY / distToBall, 90);
+      enemy.vy = damp(enemy.vy, (hoverY - enemy.y) * 2.4 + drift.y * 30, 6, dt);
+      enemy.vx = damp(enemy.vx, Math.cos(enemy.age * 0.9 + enemy.id) * 55 + drift.x * 45, 3, dt);
       // Dodge: Wisps and Glasslings slide away from a fast approach, which is
       // what forces a committed trajectory rather than a lazy drift.
       const dodgeRange = def.params.dodgeRange ?? 0;
@@ -462,8 +478,9 @@ export function updateEnemy(enemy: Enemy, def: EnemyDef, world: World, dt: numbe
     }
     case 'bomber': {
       const drift = def.params.driftSpeed ?? 34;
-      enemy.vx = damp(enemy.vx, (toBallX / distToBall) * drift, 1.4, dt);
-      enemy.vy = damp(enemy.vy, (toBallY / distToBall) * drift, 1.4, dt);
+      const heading = world.steerAroundObstacle(enemy, toBallX / distToBall, toBallY / distToBall, 90);
+      enemy.vx = damp(enemy.vx, heading.x * drift, 1.4, dt);
+      enemy.vy = damp(enemy.vy, heading.y * drift, 1.4, dt);
       integrate(enemy, dt, speedScale);
       break;
     }

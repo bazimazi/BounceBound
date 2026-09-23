@@ -229,6 +229,10 @@ export function isDiving(input: InputState): boolean {
  */
 export const DIVE_BOUNCE_SCALE = 0.3;
 
+/** Horizontal velocity decay per second while steering, and while coasting. */
+const LATERAL_DRAG_STEERING = 0.3;
+const LATERAL_DRAG_IDLE = 1.15;
+
 /**
  * Applies player intent and gravity for one fixed step. Collision resolution
  * happens afterwards in the world solver.
@@ -258,6 +262,22 @@ export function applyBallForces(
   const diveScale = isDiving(input) ? stats.diveGravity : 1;
   ball.vx += gravityX * dt;
   ball.vy += gravityY * diveScale * dt;
+
+  /**
+   * Lateral bleed.
+   *
+   * Horizontal speed decays continuously; vertical speed does not, because that is
+   * gravity's business. Without this, wall contacts compound: each one returns
+   * nearly all of the tangential component, so a few ricochets accumulate into a
+   * side-to-side ping-pong that is fast, loud, and impossible to steer out of.
+   * Playtesting described exactly that as "too bouncy to the sides".
+   *
+   * The drag is much weaker while the player is actively steering, so deliberately
+   * building and keeping speed - which Momentum builds depend on - still works. Let
+   * go of the stick and the ball settles into something controllable.
+   */
+  const lateralDrag = input.moveX !== 0 ? LATERAL_DRAG_STEERING : LATERAL_DRAG_IDLE;
+  ball.vx *= Math.exp(-lateralDrag * dt);
 
   // Air brake: exponential damping plus a control bonus, at the cost of the
   // momentum that damage scaling depends on.

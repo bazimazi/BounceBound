@@ -304,7 +304,12 @@ export class World {
       const enemy = this.enemies[i];
       if (enemy.dead) continue;
       updateEnemy(enemy, getEnemyDef(enemy.defId), this, dt);
-      if (!enemy.dead) this.depenetrateEnemy(enemy);
+      if (!enemy.dead) {
+        // Containment first, then de-penetration: an enemy shoved back inside the
+        // arena may land inside the floor slab, and that has to be resolved after.
+        this.containEnemy(enemy);
+        this.depenetrateEnemy(enemy, dt);
+      }
       if (!enemy.dead) {
         const r = enemy.radius + 4;
         this.enemyGrid.insert(enemy, enemy.x - r, enemy.y - r, enemy.x + r, enemy.y + r);
@@ -1040,6 +1045,37 @@ export class World {
   /* ---------------------------------------------- helpers for enemy logic -- */
 
   /**
+   * Keeps an enemy inside the arena.
+   *
+   * Flying enemies steer toward the ball with no boundary of their own, so any
+   * sustained sideways push - drifting, avoidance steering, knockback - eventually
+   * carries them out of the room, where they are permanently unreachable and the
+   * room can never be cleared. Soak runs found Motes thousands of units outside a
+   * 1152x648 arena. Walkers were incidentally contained by ground resolution;
+   * flyers had nothing.
+   *
+   * The bounce-back is damped rather than elastic so an enemy pressed into a corner
+   * settles instead of vibrating.
+   */
+  containEnemy(enemy: Enemy): void {
+    const margin = enemy.radius;
+    if (enemy.x < margin) {
+      enemy.x = margin;
+      enemy.vx = Math.abs(enemy.vx) * 0.4;
+    } else if (enemy.x > this.width - margin) {
+      enemy.x = this.width - margin;
+      enemy.vx = -Math.abs(enemy.vx) * 0.4;
+    }
+    if (enemy.y < margin) {
+      enemy.y = margin;
+      enemy.vy = Math.abs(enemy.vy) * 0.4;
+    } else if (enemy.y > this.height - margin) {
+      enemy.y = this.height - margin;
+      enemy.vy = -Math.abs(enemy.vy) * 0.4;
+    }
+  }
+
+  /**
    * Pushes an enemy out of any solid geometry it is overlapping.
    *
    * Necessary because enemies can end up inside props by several routes: a
@@ -1049,31 +1085,83 @@ export class World {
    * means the room can never be cleared. Balance runs found exactly this, with a
    * splitter fragment buried inside a bounce pad.
    */
-  depenetrateEnemy(enemy: Enemy): void {
+  depenetrateEnemy(enemy: Enemy, dt = 0): void {
     const candidates = this.propGrid.queryCircle(enemy.x, enemy.y, enemy.radius + 6);
+    let pushX = 0;
+    let pushY = 0;
+    let overlapping = false;
+
+    /**
+     * Pushes from every overlapping prop are accumulated and applied once.
+     *
+     * Resolving them one at a time lets the last push undo the first: an enemy
+     * wedged where a pillar meets the floor gets ejected down out of the pillar,
+     * then up out of the floor, back into the pillar, forever. Soak runs found
+     * exactly that oscillation, leaving the enemy permanently inside geometry and
+     * the room unclearable.
+     */
     for (const prop of candidates) {
       if (!propIsSolid(prop)) continue;
       const contact = circleVsShape(enemy.x, enemy.y, enemy.radius, prop.shape, this.contact);
       if (!contact.hit || contact.depth <= 0) continue;
-
+      overlapping = true;
       const push = contact.depth + 0.5;
       let nx = contact.nx;
       let ny = contact.ny;
       // Interior contacts eject along the shallowest axis, which for something
-      // buried in the floor slab points *downward* - straight out of the arena,
-      // where the clamp then pins it back inside the slab forever. If the chosen
-      // direction would leave the arena, take the opposite one.
-      const outsideX = enemy.x + nx * push < enemy.radius || enemy.x + nx * push > this.width - enemy.radius;
-      const outsideY = enemy.y + ny * push < enemy.radius || enemy.y + ny * push > this.height - enemy.radius;
-      if (outsideX || outsideY) {
+      // buried in the floor slab points downward - straight out of the arena. If
+      // the chosen direction would leave the room, take the opposite one.
+      if (
+        enemy.x + nx * push < enemy.radius ||
+        enemy.x + nx * push > this.width - enemy.radius ||
+        enemy.y + ny * push < enemy.radius ||
+        enemy.y + ny * push > this.height - enemy.radius
+      ) {
         nx = -nx;
         ny = -ny;
       }
-
-      enemy.x = clamp(enemy.x + nx * push, enemy.radius, this.width - enemy.radius);
-      enemy.y = clamp(enemy.y + ny * push, enemy.radius, this.height - enemy.radius);
-      syncEnemyShape(enemy);
+      pushX += nx * push;
+      pushY += ny * push;
     }
+
+    if (!overlapping) {
+      enemy.scratch.wedged = 0;
+      return;
+    }
+
+    enemy.x = clamp(enemy.x + pushX, enemy.radius, this.width - enemy.radius);
+    enemy.y = clamp(enemy.y + pushY, enemy.radius, this.height - enemy.radius);
+    syncEnemyShape(enemy);
+
+    // Last resort: still stuck after half a second of pushing, so search outward
+    // for genuinely open space. This is invisible in play and guarantees that no
+    // enemy can ever be permanently unreachable.
+    enemy.scratch.wedged = (enemy.scratch.wedged ?? 0) + dt;
+    if (enemy.scratch.wedged > 0.5) {
+      enemy.scratch.wedged = 0;
+      const spot = this.findOpenSpot(enemy.x, enemy.y, enemy.radius);
+      if (spot) {
+        enemy.x = spot.x;
+        enemy.y = spot.y;
+        enemy.vx = 0;
+        enemy.vy = 0;
+        syncEnemyShape(enemy);
+      }
+    }
+  }
+
+  /** Spiral search for a position where a circle of `radius` fits in free space. */
+  findOpenSpot(x: number, y: number, radius: number): { x: number; y: number } | null {
+    for (let ring = 1; ring <= 8; ring++) {
+      const distance = ring * (radius + 8);
+      for (let i = 0; i < 12; i++) {
+        const angle = (i / 12) * Math.PI * 2;
+        const px = clamp(x + Math.cos(angle) * distance, radius, this.width - radius);
+        const py = clamp(y + Math.sin(angle) * distance, radius, this.height - radius);
+        if (!this.overlapsSolid(px, py, radius)) return { x: px, y: py };
+      }
+    }
+    return null;
   }
 
   /** Simple ground resolution so walkers stand on platforms. */
@@ -1099,6 +1187,58 @@ export class World {
       landed = true;
     }
     return landed;
+  }
+
+  /**
+   * Obstacle avoidance for flying enemies.
+   *
+   * Flyers steer straight at the ball, which means a pillar between them and the
+   * player traps them: they push into the face, de-penetration pushes them back,
+   * and they hover there permanently out of reach. Soak runs found whole clusters
+   * of Motes pinned to one side of a pillar with the ball on the other.
+   *
+   * When the direct line is blocked, the desired direction is blended toward the
+   * wall's tangent so the flyer slides along it and around the obstacle. The chosen
+   * side is fixed per enemy so a group does not oscillate as one.
+   */
+  steerAroundObstacle(enemy: Enemy, dirX: number, dirY: number, probe = 110): { x: number; y: number } {
+    /**
+     * Throttled: the raycast runs a few times a second per enemy, not on every one
+     * of the 240 simulation steps. Casting per enemy per step is O(enemies x
+     * geometry) at 240 Hz, which measurably dominated the frame in crowded rooms -
+     * a soak run that took fourteen seconds took six minutes. The obstacle is not
+     * moving fast enough for the difference to be visible.
+     */
+    const now = this.simTime;
+    if ((enemy.scratch.avoidUntil ?? 0) > now) {
+      const cachedX = enemy.scratch.avoidX;
+      const cachedY = enemy.scratch.avoidY;
+      if (cachedX !== undefined && cachedY !== undefined) return { x: cachedX, y: cachedY };
+    }
+    // Stagger recomputation across enemies so a swarm does not all cast on the
+    // same step.
+    enemy.scratch.avoidUntil = now + 0.1 + (enemy.id % 7) * 0.01;
+
+    let outX = dirX;
+    let outY = dirY;
+    const hit = this.raycast(enemy.x, enemy.y, dirX, dirY, probe, enemy.radius * 0.9, false);
+    if (hit.t >= 0) {
+      // Perpendicular to the blocked direction, on this enemy's preferred side.
+      const side = enemy.id % 2 === 0 ? 1 : -1;
+      const tangentX = -dirY * side;
+      const tangentY = dirX * side;
+      // The closer the obstacle, the more the tangent dominates.
+      const urgency = 1 - clamp01(hit.t / probe);
+      const blend = 0.35 + urgency * 0.65;
+      const x = dirX * (1 - blend) + tangentX * blend;
+      const y = dirY * (1 - blend) + tangentY * blend;
+      const len = Math.hypot(x, y) || 1;
+      outX = x / len;
+      outY = y / len;
+    }
+    enemy.scratch.avoidX = outX;
+    enemy.scratch.avoidY = outY;
+    return { x: outX, y: outY };
   }
 
   /** Ledge check so walkers turn around instead of walking into a pit. */
@@ -1296,8 +1436,12 @@ export class World {
   }
 
   /**
-   * Casts a ray (inflated by `radius`) against solid geometry and enemies.
-   * Returns the nearest hit distance, or t = -1.
+   * Casts a ray (inflated by `radius`) against solid geometry and, optionally,
+   * enemies. Returns the nearest hit distance, or t = -1.
+   *
+   * `includeEnemies` is false for queries that only care about level geometry, such
+   * as an enemy checking whether a wall blocks its path. Testing every enemy there
+   * makes the query quadratic in the enemy count for no benefit.
    */
   raycast(
     x: number,
@@ -1306,6 +1450,7 @@ export class World {
     dirY: number,
     maxDist: number,
     radius = 0,
+    includeEnemies = true,
   ): { t: number; nx: number; ny: number; enemy: Enemy | null; prop: Prop | null } {
     let bestT = -1;
     let bestProp: Prop | null = null;
@@ -1324,13 +1469,15 @@ export class World {
         bestEnemy = null;
       }
     }
-    for (const enemy of this.enemies) {
-      if (enemy.dead) continue;
-      const t = rayVsShape(x, y, dirX, dirY, maxDist, enemy.shape, radius);
-      if (t >= 0 && (bestT < 0 || t < bestT)) {
-        bestT = t;
-        bestEnemy = enemy;
-        bestProp = null;
+    if (includeEnemies) {
+      for (const enemy of this.enemies) {
+        if (enemy.dead) continue;
+        const t = rayVsShape(x, y, dirX, dirY, maxDist, enemy.shape, radius);
+        if (t >= 0 && (bestT < 0 || t < bestT)) {
+          bestT = t;
+          bestEnemy = enemy;
+          bestProp = null;
+        }
       }
     }
 

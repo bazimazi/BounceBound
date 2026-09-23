@@ -116,18 +116,22 @@ export const STAT_SPECS: Record<StatKey, StatSpec> = {
   /**
    * The floor always returns at least this much speed along its normal.
    *
-   * This number is load-bearing for the entire game. At 2150 gravity, a rebound of
-   * 950 lifts the ball about 210 units - roughly a third of the 648-unit arena -
-   * so every floor contact puts the player back into useful airspace with time to
-   * steer. An earlier value of 300 produced a 21-unit hop, which meant that once
-   * the ball bled off energy it was effectively stuck on the floor and could not
-   * reach anything above it. Balance runs showed rooms failing to clear for exactly
-   * that reason.
+   * This number is load-bearing for the entire game, and it has a narrow good
+   * range. At 2150 gravity a rebound of 780 lifts the ball about 140 units, a bit
+   * over a fifth of the 648-unit arena: enough that the ball is always back in
+   * useful airspace with time to steer, and calm enough that it is not permanently
+   * launched.
+   *
+   * Both directions are wrong in ways playtesting caught. At 300 the hop was 21
+   * units, so a ball that had bled off energy was stuck on the floor and could not
+   * reach anything - rooms became unclearable. At 950 the floor was a trampoline
+   * that kept total speed above 900 u/s a quarter of the time, which read as the
+   * ball being too bouncy to enjoy.
    *
    * Diving scales this down (see `DIVE_BOUNCE_SCALE`), which is how the player
    * chooses to stay low.
    */
-  minBounceSpeed: { base: 950, min: 60, max: 2200, label: 'Minimum rebound', format: 'number' },
+  minBounceSpeed: { base: 780, min: 60, max: 2200, label: 'Minimum rebound', format: 'number' },
   perfectWindow: { base: 0.13, min: 0.03, max: 0.6, label: 'Perfect window', format: 'seconds' },
   perfectPower: { base: 1.3, min: 1, max: 3.2, label: 'Perfect power', format: 'number' },
   wallBouncePower: { base: 1, min: 0.4, max: 3.5, label: 'Wall rebound', format: 'percent' },

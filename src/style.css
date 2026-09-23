@@ -6,8 +6,16 @@
  * text is deliberately high contrast and generously sized, because a player
  * reading an upgrade card is making a decision under time pressure.
  *
- * Every size is expressed in rem against a root font size the interface-scale
- * setting controls, so the whole UI scales together.
+ * Playtesting said the panels looked like a web app. Four changes address that,
+ * and they are all about *shape* rather than colour:
+ *
+ *  - Corners are clipped, not rounded. Angular silhouettes match the arena's
+ *    geometry; border-radius reads as a document.
+ *  - Headings are uppercase with wide tracking, and numerals are tabular and
+ *    oversized, so panels are dominated by numbers rather than sentences.
+ *  - Panels get a hard accent rule along the top edge instead of a soft shadow.
+ *  - Form controls are restyled away from their browser defaults, because a
+ *    native range slider is the single strongest "this is a settings page" signal.
  */
 
 :root {
@@ -21,8 +29,11 @@
   --bb-bad: #ff6b85;
   --bb-warn: #ffd15c;
   --bb-rare: #f0b14a;
-  --bb-radius: 10px;
+  --bb-radius: 0px;
   --bb-font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --bb-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Angular corner notch used across panels, cards and buttons. */
+  --bb-notch: 10px;
   color-scheme: dark;
 }
 
@@ -78,13 +89,33 @@ body {
 }
 
 .bb-panel {
+  position: relative;
   width: min(62rem, 100%);
   background: var(--bb-panel);
   border: 1px solid var(--bb-panel-edge);
-  border-radius: var(--bb-radius);
+  /* Clipped corners rather than rounded: angular reads as a game, round reads as
+     a document. */
+  clip-path: polygon(
+    var(--bb-notch) 0,
+    100% 0,
+    100% calc(100% - var(--bb-notch)),
+    calc(100% - var(--bb-notch)) 100%,
+    0 100%,
+    0 var(--bb-notch)
+  );
   padding: 1.5rem 1.75rem;
-  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.55);
   animation: bb-rise 0.16s ease-out;
+}
+
+/* A hard accent rule along the top edge, in place of a soft drop shadow. */
+.bb-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--bb-notch);
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--bb-accent), transparent 70%);
 }
 
 .bb-panel-wide {
@@ -104,8 +135,10 @@ body {
 
 .bb-panel-head h2 {
   margin: 0;
-  font-size: 1.6rem;
-  letter-spacing: -0.01em;
+  font-size: 1.5rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .bb-sub {
@@ -140,8 +173,11 @@ body {
 
 .bb-section h3 {
   margin: 0 0 0.6rem;
-  font-size: 0.78rem;
-  letter-spacing: 0.1em;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--bb-text-dim);
 }
@@ -168,14 +204,16 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
-  padding: 0.6rem 1rem;
+  padding: 0.6rem 1.1rem;
   background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
   color: var(--bb-text);
   font: inherit;
-  font-size: 0.92rem;
-  font-weight: 600;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, transform 0.08s;
 }
@@ -231,13 +269,13 @@ kbd {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 0.45rem;
+  gap: 0.4rem;
   text-align: left;
-  padding: 0.9rem 1rem 2.4rem;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
-  border: 1px solid color-mix(in srgb, var(--rarity) 40%, transparent);
+  padding: 0.85rem 0.95rem 2.2rem;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--rarity) 10%, transparent), rgba(255, 255, 255, 0.015));
+  border: 1px solid color-mix(in srgb, var(--rarity) 45%, transparent);
   border-top: 3px solid var(--rarity);
-  border-radius: 8px;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
   color: var(--bb-text);
   font: inherit;
   cursor: pointer;
@@ -262,27 +300,16 @@ kbd {
 }
 
 .bb-card-name {
-  font-size: 1.02rem;
-  font-weight: 700;
+  font-size: 0.98rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--rarity);
 }
 
-.bb-card-family,
-.bb-card-rarity {
-  font-size: 0.66rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--bb-text-dim);
-}
-
-.bb-card-meta {
-  display: flex;
-  gap: 0.5rem;
-  align-items: center;
-}
-
 .bb-card-stacks {
-  font-size: 0.68rem;
+  font-family: var(--bb-mono);
+  font-size: 0.7rem;
   color: var(--bb-text-dim);
 }
 
@@ -310,19 +337,13 @@ kbd {
   color: var(--bb-bad);
 }
 
-.bb-card-hint,
 .bb-card-synergy {
   margin: 0;
-  font-size: 0.76rem;
-  line-height: 1.45;
-  color: var(--bb-text-dim);
-  font-style: italic;
-}
-
-.bb-card-synergy {
+  font-size: 0.7rem;
+  line-height: 1.4;
   color: var(--bb-rare);
-  font-style: normal;
-  font-weight: 600;
+  font-weight: 800;
+  letter-spacing: 0.06em;
 }
 
 .bb-card-stats {
@@ -337,22 +358,33 @@ kbd {
 
 .bb-card footer {
   position: absolute;
-  bottom: 0.7rem;
-  left: 1rem;
-  right: 1rem;
+  bottom: 0.6rem;
+  left: 0.95rem;
+  right: 0.95rem;
   display: flex;
   justify-content: space-between;
-  font-size: 0.74rem;
+  font-family: var(--bb-mono);
+  font-size: 0.8rem;
   color: var(--bb-text-dim);
 }
 
+/* The number key is drawn as a physical key cap, which reads as a game prompt. */
 .bb-card-key {
   justify-content: flex-end;
+}
+
+.bb-card-key::before {
+  content: '';
 }
 
 .bb-card-price {
   color: var(--bb-warn);
   font-weight: 700;
+}
+
+.bb-card-price::after {
+  content: ' ◆';
+  opacity: 0.7;
 }
 
 .bb-unaffordable {
@@ -667,34 +699,89 @@ kbd {
   grid-template-columns: 1fr auto;
 }
 
+/* Range inputs are fully restyled: a native slider is the single clearest visual
+   cue that the player is looking at a web form rather than a game menu. */
 .bb-field input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
   width: 100%;
-  accent-color: var(--bb-accent);
+  height: 0.85rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bb-field input[type='range']::-webkit-slider-runnable-track {
+  height: 0.3rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.bb-field input[type='range']::-moz-range-track {
+  height: 0.3rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.bb-field input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 0.55rem;
+  height: 0.85rem;
+  margin-top: -0.3rem;
+  background: var(--bb-accent);
+  border: none;
+}
+
+.bb-field input[type='range']::-moz-range-thumb {
+  width: 0.55rem;
+  height: 0.85rem;
+  border-radius: 0;
+  background: var(--bb-accent);
+  border: none;
 }
 
 .bb-field input[type='text'],
 .bb-field select {
   padding: 0.4rem 0.5rem;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 5px;
   color: var(--bb-text);
   font: inherit;
-  font-size: 0.86rem;
+  font-family: var(--bb-mono);
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
 }
 
+/* Checkboxes become square indicator lamps. */
 .bb-field input[type='checkbox'] {
-  width: 1.1rem;
-  height: 1.1rem;
-  accent-color: var(--bb-accent);
+  -webkit-appearance: none;
+  appearance: none;
+  width: 1.05rem;
+  height: 1.05rem;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  cursor: pointer;
+  position: relative;
+}
+
+.bb-field input[type='checkbox']:checked {
+  border-color: var(--bb-accent);
+}
+
+.bb-field input[type='checkbox']:checked::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  background: var(--bb-accent);
 }
 
 .bb-readout {
-  min-width: 3.2rem;
+  min-width: 3.4rem;
   text-align: right;
+  font-family: var(--bb-mono);
   font-variant-numeric: tabular-nums;
-  color: var(--bb-text-dim);
-  font-size: 0.8rem;
+  color: var(--bb-text);
+  font-size: 0.78rem;
 }
 
 .bb-gains {
@@ -707,14 +794,18 @@ kbd {
   padding: 0.6rem 0.7rem;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 7px;
+  border-left: 2px solid var(--bb-accent);
 }
 
+/* Oversized tabular numerals: the results screen should be dominated by numbers,
+   not by sentences. */
 .bb-gain-value {
   display: block;
-  font-size: 1.4rem;
-  font-weight: 800;
-  line-height: 1.1;
+  font-family: var(--bb-mono);
+  font-size: 1.7rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
 }
 
 .bb-gain-label {
@@ -815,25 +906,49 @@ kbd {
   color: var(--bb-text-dim);
 }
 
+/* Dense name grid. Detail lives in the tooltip, so entries stay one line tall and
+   the journal reads as a collection rather than a reference manual. */
 .bb-entry {
   --rarity: var(--bb-text-dim);
-  padding: 0.45rem 0.55rem;
-  margin-bottom: 0.3rem;
+  padding: 0.3rem 0.5rem;
+  margin-bottom: 0.2rem;
   border-left: 2px solid var(--rarity);
   background: rgba(255, 255, 255, 0.03);
-  border-radius: 0 4px 4px 0;
+  cursor: help;
 }
 
 .bb-entry strong {
   display: block;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .bb-entry small {
   display: block;
-  font-size: 0.74rem;
-  line-height: 1.4;
+  font-size: 0.72rem;
+  line-height: 1.35;
   color: var(--bb-text-dim);
+}
+
+.bb-silhouettes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.bb-silhouette {
+  display: grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  color: var(--bb-text-dim);
+  font-weight: 800;
+  cursor: help;
 }
 
 .bb-entry-hidden {
