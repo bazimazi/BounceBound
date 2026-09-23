@@ -66,6 +66,8 @@ export class Game {
   /** Number of selectable options on the current screen, for number keys. */
   private optionCount = 0;
   private lastRenderedScreen: Screen | null = null;
+  /** Run revision the overlay was last built from. */
+  private lastRevision = -1;
   private uiDirty = true;
 
   private rafHandle = 0;
@@ -362,9 +364,14 @@ export class Game {
       }
     }
 
-    if (!this.uiDirty && this.lastRenderedScreen === this.screen) return;
+    // Rebuild when the screen changes *or* when the run reports that the content of
+    // the current screen changed. Screen identity alone is not enough: a second
+    // queued reward replaces the offer without leaving the reward screen.
+    const revision = run?.uiRevision ?? 0;
+    if (!this.uiDirty && this.lastRenderedScreen === this.screen && this.lastRevision === revision) return;
     this.uiDirty = false;
     this.lastRenderedScreen = this.screen;
+    this.lastRevision = revision;
     clear(this.overlay);
     this.overlay.classList.toggle('bb-overlay-active', this.screen !== 'playing');
     this.optionCount = 0;

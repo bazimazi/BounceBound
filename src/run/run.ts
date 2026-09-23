@@ -285,6 +285,25 @@ export class Run {
   /** True when this run was resumed from a save rather than started fresh. */
   resumed = false;
 
+  /**
+   * Increments whenever state the interface displays changes.
+   *
+   * The overlay is rebuilt from scratch rather than diffed, so it needs to know
+   * when to do that. Keying off the screen name alone was not enough and caused a
+   * real, reported bug: taking the first of two queued rewards replaces the offer
+   * while *staying* on the reward screen, so the panel kept showing the spent
+   * cards. Clicking them did nothing, because the ids no longer matched the live
+   * offer, while the number keys indexed the new offer the player could not see.
+   *
+   * The same staleness silently broke the reroll and skip buttons and the altar
+   * result, all of which change content without changing screen.
+   */
+  uiRevision = 0;
+
+  private touchUi(): void {
+    this.uiRevision++;
+  }
+
   /* ------------------------------------------------------------- start state -- */
 
   private applyStartingState(restore?: RunSnapshot): void {
@@ -701,6 +720,7 @@ export class Run {
     entry.purchased = true;
     this.grantUpgrade(entry.def.id);
     this.notify(`Bought ${entry.def.name}`, 'good');
+    this.touchUi();
   }
 
   private resolveGamble(kind: string): void {
@@ -740,10 +760,31 @@ export class Run {
 
   private queueReward(title: string, count: number, rarityBonus: number): void {
     this.pendingRewards += count;
-    this.openReward(title, rarityBonus);
+    this.presentNextReward(title, rarityBonus);
   }
 
-  private openReward(title: string, rarityBonus: number): void {
+  /**
+   * Presents the next pending reward, or finishes the reward sequence.
+   *
+   * This owns the pending counter, so an offer that cannot be filled (the player
+   * already holds everything eligible) is converted to shards and *skipped* rather
+   * than leaving the previous offer on screen. An earlier version returned early in
+   * that case, which left a stale panel the player could not interact with.
+   */
+  private presentNextReward(title: string, rarityBonus: number): void {
+    while (this.pendingRewards > 0) {
+      if (this.tryOpenReward(title, rarityBonus)) return;
+      this.pendingRewards = Math.max(0, this.pendingRewards - 1);
+      const amount = 30;
+      this.shards += amount;
+      this.telemetry.shardsEarned += amount;
+      this.notify(`Nothing new to offer: ${amount} shards instead`, 'info');
+    }
+    this.finishRewards();
+  }
+
+  /** Builds an offer. Returns false when there is nothing left to offer. */
+  private tryOpenReward(title: string, rarityBonus: number): boolean {
     const stats = this.build.stats();
     const choices = Math.max(1, Math.round(stats.upgradeChoices) - this.bound.fewerChoices);
     const upgrades = rollOffers({
@@ -755,15 +796,7 @@ export class Run {
       allowCursed: this.profile.isUnlocked('family_cursed'),
       unlocked: (id) => this.profile.isUnlocked(id),
     });
-    if (upgrades.length === 0) {
-      // Nothing left to offer: convert to shards so the reward is never wasted.
-      const amount = 30;
-      this.shards += amount;
-      this.telemetry.shardsEarned += amount;
-      this.pendingRewards = Math.max(0, this.pendingRewards - 1);
-      this.notify(`Nothing new to offer: ${amount} shards instead`, 'info');
-      return;
-    }
+    if (upgrades.length === 0) return false;
     this.reward = {
       upgrades,
       rerolls: this.rerollsLeft,
@@ -772,7 +805,21 @@ export class Run {
       skipShards: 18 + this.currentNode.depth * 2,
     };
     this.phase = 'reward';
+    this.touchUi();
     this.clock.resync();
+    return true;
+  }
+
+  /** Closes the reward sequence and moves on to the route or back to play. */
+  private finishRewards(): void {
+    this.reward = null;
+    this.touchUi();
+    if (this.goalArmed) {
+      this.openMap();
+    } else {
+      this.phase = 'playing';
+      this.clock.resync();
+    }
   }
 
   takeUpgrade(id: string): void {
@@ -808,21 +855,12 @@ export class Run {
       exclude: new Set(this.reward.upgrades.map((u) => u.id)),
     });
     this.reward.rerolls = this.rerollsLeft;
+    this.touchUi();
   }
 
   private advanceReward(): void {
     this.pendingRewards = Math.max(0, this.pendingRewards - 1);
-    if (this.pendingRewards > 0) {
-      this.openReward('Another', 0.2);
-      return;
-    }
-    this.reward = null;
-    if (this.goalArmed) {
-      this.openMap();
-    } else {
-      this.phase = 'playing';
-      this.clock.resync();
-    }
+    this.presentNextReward('Another', 0.2);
   }
 
   private grantUpgrade(id: string): void {
@@ -846,6 +884,7 @@ export class Run {
     this.profile.discover('events', def.discoveryId);
     this.eventPrompt = { def, resultLines: [], resolved: false };
     this.phase = 'event';
+    this.touchUi();
     this.clock.resync();
   }
 
@@ -872,6 +911,7 @@ export class Run {
       if (line) prompt.resultLines.push(line);
     }
     prompt.resolved = true;
+    this.touchUi();
   }
 
   canChooseEvent(choice: EventChoice): boolean {
@@ -883,8 +923,9 @@ export class Run {
   closeEvent(): void {
     if (this.phase !== 'event') return;
     this.eventPrompt = null;
+    this.touchUi();
     if (this.pendingRewards > 0) {
-      this.openReward('From the altar', 0.5);
+      this.presentNextReward('From the altar', 0.5);
     } else {
       this.phase = 'playing';
       this.clock.resync();
@@ -979,6 +1020,7 @@ export class Run {
     for (const choice of choices) choice.hidden = false;
     this.mapChoices = choices;
     this.phase = 'map';
+    this.touchUi();
     this.clock.resync();
   }
 
@@ -993,6 +1035,7 @@ export class Run {
     this.populateWorld(this.currentRoom);
     this.mapChoices = [];
     this.phase = 'playing';
+    this.touchUi();
     this.clock.resync();
     this.emitRoomEntered();
   }
@@ -1054,12 +1097,16 @@ export class Run {
     const count = archetype === 'elite' || archetype === 'miniboss' || archetype === 'boss' ? 2 : 1;
     const noReward = archetype === 'shop' || archetype === 'respite' || archetype === 'event';
     if (noReward) {
+      this.goalArmed = true;
       this.openMap();
       return;
     }
     this.pendingRewards += count;
-    this.openReward(archetype === 'boss' ? 'Depth cleared' : 'Cleared', bonus);
+    // `goalArmed` is set first: `presentNextReward` may finish immediately when
+    // there is nothing left to offer, and it reads this flag to decide whether to
+    // open the route or drop back into play.
     this.goalArmed = true;
+    this.presentNextReward(archetype === 'boss' ? 'Depth cleared' : 'Cleared', bonus);
   }
 
   /* -------------------------------------------------------------------- ending -- */
@@ -1070,6 +1117,7 @@ export class Run {
     this.victory = victory;
     this.deathCause = cause;
     this.phase = victory ? 'victory' : 'defeat';
+    this.touchUi();
 
     // Echoes are the payout that makes a failed run worthwhile. They scale with
     // depth reached and Bound level, not with whether the run was won, so a good

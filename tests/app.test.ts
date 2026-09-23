@@ -285,6 +285,92 @@ describe('the application boots and every screen renders', () => {
     second.stop();
   });
 
+  it('re-renders the reward panel when a second queued reward replaces the first', async () => {
+    /**
+     * Regression test for a reported bug: with more than one reward queued, the
+     * panel kept displaying the spent cards, clicking them did nothing, and the
+     * number keys operated on an offer the player could not see. The overlay was
+     * only rebuilt when the *screen* changed, and a second reward stays on the
+     * reward screen.
+     */
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+    const game = new Game(canvas, overlay);
+    game.start();
+    frames.runFrames(1);
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Begin descent'))!.click();
+    frames.runFrames(4);
+
+    const run = game.currentRun!;
+    for (const enemy of [...run.world.enemies]) run.world.killEnemy(enemy, 'other', null);
+    for (let i = 0; i < 400 && run.phase === 'playing'; i++) frames.runFrames(4);
+    frames.runFrames(3);
+    expect(run.phase).toBe('reward');
+
+    // Queue a second reward, exactly as an elite, Warden or boss room does. Set
+    // directly so the test exercises the multi-reward path deterministically rather
+    // than depending on which room type the seed generated.
+    (run as unknown as { pendingRewards: number }).pendingRewards = 2;
+
+    const renderedFirst = [...overlay.querySelectorAll('.bb-card-name')].map((n) => n.textContent);
+    expect(renderedFirst).toEqual(run.reward!.upgrades.map((u) => u.name));
+
+    // Click the first card, as a player would.
+    (overlay.querySelector('.bb-card') as HTMLButtonElement).click();
+    frames.runFrames(3);
+
+    // Still on the reward screen, but showing the *second* offer.
+    expect(run.phase).toBe('reward');
+    expect(run.reward).not.toBeNull();
+    const renderedSecond = [...overlay.querySelectorAll('.bb-card-name')].map((n) => n.textContent);
+    expect(renderedSecond).toEqual(run.reward!.upgrades.map((u) => u.name));
+    expect(renderedSecond).not.toEqual(renderedFirst);
+
+    // And clicking must take the upgrade rather than silently failing.
+    const heldBefore = run.build.size;
+    (overlay.querySelector('.bb-card') as HTMLButtonElement).click();
+    frames.runFrames(3);
+    expect(run.build.size).toBeGreaterThan(heldBefore);
+    // Both rewards consumed, so the sequence is over.
+    expect(run.phase).not.toBe('reward');
+    game.stop();
+  });
+
+  it('keeps the reroll and skip buttons live', async () => {
+    // Both change the offer without changing screen, so both were broken by the
+    // same staleness as the multi-reward bug.
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+    const game = new Game(canvas, overlay);
+    game.start();
+    frames.runFrames(1);
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Begin descent'))!.click();
+    frames.runFrames(4);
+
+    const run = game.currentRun!;
+    for (const enemy of [...run.world.enemies]) run.world.killEnemy(enemy, 'other', null);
+    for (let i = 0; i < 400 && run.phase === 'playing'; i++) frames.runFrames(4);
+    frames.runFrames(3);
+    expect(run.phase).toBe('reward');
+
+    run.rerollsLeft = 3;
+    run.reward!.rerolls = 3;
+    (run as unknown as { uiRevision: number }).uiRevision++;
+    frames.runFrames(2);
+    const before = [...overlay.querySelectorAll('.bb-card-name')].map((n) => n.textContent);
+    const reroll = [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Reroll'));
+    expect(reroll).toBeDefined();
+    reroll!.click();
+    frames.runFrames(3);
+    const after = [...overlay.querySelectorAll('.bb-card-name')].map((n) => n.textContent);
+    // The offer changed, so the rendered names must have changed with it.
+    expect(after).not.toEqual(before);
+    expect(after).toEqual(run.reward!.upgrades.map((u) => u.name));
+    game.stop();
+  });
+
   it('resumes an in-progress run after a reload', async () => {
     const frames = installFrameStub();
     const { canvas, overlay } = mountDom();
