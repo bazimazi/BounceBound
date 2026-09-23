@@ -188,9 +188,16 @@ select spells out only the chosen class; and settings hints live in tooltips. De
 is always one hover away, never printed for every entry at once.
 
 Visually the shape does the work rather than the colour — clipped corners instead of
-rounded, uppercase tracked headings, oversized tabular numerals, and fully restyled
-range and checkbox controls, since a native slider is the strongest "settings page"
-signal there is. Two tests enforce density budgets so the text cannot creep back.
+rounded, uppercase tracked headings, oversized tabular numerals, corner brackets,
+faint scanlines, and fully restyled range and checkbox controls, since a native
+slider is the strongest "settings page" signal there is. Cards are dealt in with a
+short stagger and sweep on hover, legendary and cursed picks pulse, selectable route
+nodes glow, and results numbers count in one after another.
+
+All of that is motion, so all of it is subordinate to the accessibility settings:
+*Reduce motion* and *Reduce flashing* now apply to the DOM panels as well as the
+canvas, and the interface-scale setting drives the root font size so menus scale with
+the HUD. Two tests enforce text-density budgets so the wordiness cannot creep back.
 
 ## Accessibility
 
@@ -209,6 +216,23 @@ recoverable staging value, never a half-written one. On load, a failed checksum
 falls back to staging, then to backup, and the player is told when a recovery
 happened. A stored profile is treated as untrusted input and repaired rather than
 trusted.
+
+**Runs survive a reload.** Refreshing the page drops you straight back into the run
+you were in — no prompt, no menu. What makes this cheap is determinism: because the
+map and every room are pure functions of the seed, nothing about the *world* is
+stored. Only what the player accumulated is written down (build, currencies, vitals,
+route progress, telemetry) and the room is regenerated on load.
+
+Granularity is the room, not the frame. A resume puts you at the start of the room
+you were in, carrying your **current** integrity and shields rather than the values
+at room entry — so a reload cannot be used to undo damage. The snapshot is written
+on room entry, on taking an upgrade, on touching an interactable, every six seconds,
+and on shutdown; it is cleared the moment a run ends, so death still means death. A
+snapshot that references content this build no longer defines is repaired or
+discarded rather than trusted, so a stale save can never trap you in a boot loop.
+
+Pause offers both **Save and quit** (shelves the run; the menu then leads with
+*Continue run*) and **Abandon run** (ends it and discards it).
 
 ## Where this stands
 

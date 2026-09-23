@@ -285,6 +285,120 @@ describe('the application boots and every screen renders', () => {
     second.stop();
   });
 
+  it('resumes an in-progress run after a reload', async () => {
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+
+    // Play into a run, take an upgrade, and bank some shards.
+    const first = new Game(canvas, overlay);
+    first.start();
+    frames.runFrames(1);
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Begin descent'))!.click();
+    frames.runFrames(4);
+
+    const run = first.currentRun!;
+    run.build.add('critical_impact');
+    run.shards += 77;
+    const expected = {
+      seed: run.seed,
+      node: run.currentNode.id,
+      upgrades: run.build.order.slice(),
+      shards: run.shards,
+      hp: run.world.ball.hp,
+    };
+    frames.runFrames(2);
+    first.stop();
+
+    // A reload is a brand new Game against the same storage.
+    const second = new Game(canvas, overlay);
+    second.start();
+    frames.runFrames(3);
+
+    const resumed = second.currentRun;
+    expect(resumed, 'the run should have been resumed, not discarded').not.toBeNull();
+    expect(resumed!.resumed).toBe(true);
+    expect(resumed!.seed).toBe(expected.seed);
+    expect(resumed!.currentNode.id).toBe(expected.node);
+    expect(resumed!.shards).toBe(expected.shards);
+    expect(resumed!.build.order).toEqual(expected.upgrades);
+    expect(resumed!.world.ball.hp).toBeCloseTo(expected.hp, 3);
+    // The same room, rebuilt from the seed rather than stored.
+    expect(resumed!.currentRoom.templateId).toBe(run.currentRoom.templateId);
+    second.stop();
+  });
+
+  it('does not resume a run that has ended', async () => {
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+
+    const first = new Game(canvas, overlay);
+    first.start();
+    frames.runFrames(1);
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Begin descent'))!.click();
+    frames.runFrames(4);
+    first.currentRun!.finish(false, 'hazard');
+    frames.runFrames(2);
+    first.stop();
+
+    const second = new Game(canvas, overlay);
+    second.start();
+    frames.runFrames(2);
+    // A finished run must not be restored, or death would be meaningless.
+    expect(second.currentRun).toBeNull();
+    expect(second.currentScreen).toBe('menu');
+    second.stop();
+  });
+
+  it('keeps a shelved run when quitting to the menu, and drops it when abandoning', async () => {
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+    const { RunStore } = await import('../src/run/runSave');
+
+    const game = new Game(canvas, overlay);
+    game.start();
+    frames.runFrames(1);
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Begin descent'))!.click();
+    frames.runFrames(4);
+
+    // Save and quit keeps it.
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+    frames.runFrames(2);
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Save and quit'))!.click();
+    frames.runFrames(2);
+    expect(new RunStore().load()).not.toBeNull();
+    expect(overlay.textContent).toContain('Continue run');
+
+    // Resuming from the menu works.
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Continue run'))!.click();
+    frames.runFrames(3);
+    expect(game.currentRun).not.toBeNull();
+
+    // Abandoning discards it.
+    globalThis.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true }));
+    frames.runFrames(2);
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Abandon run'))!.click();
+    frames.runFrames(2);
+    expect(new RunStore().load()).toBeNull();
+    game.stop();
+  });
+
+  it('discards a corrupt run save instead of trapping the player', async () => {
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+
+    localStorage.setItem('bouncebound.run', '{"v":2,"sum":"nope","data":{"seed":123}}');
+    const game = new Game(canvas, overlay);
+    game.start();
+    frames.runFrames(2);
+    expect(game.currentRun).toBeNull();
+    expect(game.currentScreen).toBe('menu');
+    game.stop();
+  });
+
   it('survives a purchase in the unlock tree', async () => {
     const frames = installFrameStub();
     const { canvas, overlay } = mountDom();

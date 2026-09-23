@@ -23,6 +23,7 @@ import { createInput } from '../sim/ball';
 import { Profile } from '../meta/profile';
 import type { Settings } from '../meta/settings';
 import { Run } from '../run/run';
+import { RunStore, type RunSnapshot } from '../run/runSave';
 import { Renderer } from '../render/renderer';
 import { FxSystem } from '../render/fx';
 import { drawControlHints, drawHud } from '../render/hud';
@@ -72,6 +73,10 @@ export class Game {
   private fps = 60;
   private readonly draft: { seed: string; ballId: string; boundLevel: number };
 
+  private readonly runStore = new RunStore();
+  /** Seconds until the next periodic run save. */
+  private runSaveTimer = 0;
+
   /** First-run teaching state: which verbs the player has used. */
   private learned = { steer: false, bounce: false, dive: false };
 
@@ -104,6 +109,7 @@ export class Game {
 
     this.renderer.updateSettings(this.profile.settings);
     this.renderer.resize();
+    this.applyInterfacePreferences();
 
     globalThis.addEventListener('resize', () => {
       this.renderer.resize();
@@ -115,10 +121,15 @@ export class Game {
       if (document.hidden) this.audio.suspend();
       else this.audio.resume();
     });
-    // Best-effort flush on exit. The scheduler also flushes on run end, so at most
-    // a few seconds of counter progress can ever be at risk.
-    globalThis.addEventListener('pagehide', () => this.profile.flush());
-    globalThis.addEventListener('beforeunload', () => this.profile.flush());
+    // Best-effort flush on exit, for both the profile and the in-progress run. The
+    // run is also saved on every meaningful transition, so these handlers are a
+    // safety net rather than the mechanism.
+    const flushAll = (): void => {
+      this.profile.flush();
+      this.saveRun();
+    };
+    globalThis.addEventListener('pagehide', flushAll);
+    globalThis.addEventListener('beforeunload', flushAll);
 
     if (this.profile.loadOutcome === 'recovered-backup' || this.profile.loadOutcome === 'recovered-staging') {
       // Tell the player rather than silently continuing from an older state.
@@ -127,7 +138,14 @@ export class Game {
       }, 600);
     }
 
-    this.setScreen('menu');
+    // Resume straight back into an interrupted run. A reload should be invisible,
+    // so this deliberately skips the menu rather than asking for confirmation.
+    const saved = this.runStore.load();
+    if (saved) {
+      this.resumeRun(saved);
+    } else {
+      this.setScreen('menu');
+    }
   }
 
   start(): void {
@@ -142,6 +160,10 @@ export class Game {
     globalThis.cancelAnimationFrame(this.rafHandle);
     this.input.dispose();
     this.audio.dispose();
+    // Persist the run as well as the profile: shutting the game down is exactly the
+    // case the resume feature exists for, and relying on the unload handlers alone
+    // would leave up to one periodic-save interval unrecorded.
+    this.saveRun();
     this.profile.flush();
   }
 
@@ -179,6 +201,14 @@ export class Game {
         }
       } else {
         this.clock.resync();
+      }
+
+      // Periodic save so that shards and incidental progress within a long room are
+      // not lost to a reload either.
+      this.runSaveTimer -= realDelta;
+      if (this.runSaveTimer <= 0) {
+        this.runSaveTimer = 6;
+        this.saveRun();
       }
 
       run.world.predict();
@@ -343,7 +373,17 @@ export class Game {
       profile: this.profile,
       playClick: () => this.audio.click(),
       playHover: () => this.audio.hover(),
-      startRun: (options) => this.startRun(options),
+      startRun: (options) => {
+        // Starting fresh discards any shelved run, which is the only destructive
+        // thing the menu can do, so it is surfaced on the button itself.
+        this.runStore.clear();
+        this.startRun(options);
+      },
+      savedRun: () => this.runStore.load(),
+      continueRun: () => {
+        const saved = this.runStore.load();
+        if (saved) this.resumeRun(saved);
+      },
       refresh: () => {
         this.uiDirty = true;
         this.lastRenderedScreen = null;
@@ -371,6 +411,7 @@ export class Game {
       playClick: () => this.audio.click(),
       playHover: () => this.audio.hover(),
       abandonRun: () => this.abandonRun(),
+      suspendRun: () => this.suspendToMenu(),
       resume: () => this.setScreen('playing'),
       startNewRun: () => this.startRun({ ballId: this.draft.ballId, boundLevel: this.draft.boundLevel }),
       openMenu: () => this.returnToMenu(),
@@ -502,16 +543,17 @@ export class Game {
 
   /* ---------------------------------------------------------------- run flow -- */
 
-  private startRun(options: { seed?: string; ballId: string; boundLevel: number }): void {
+  private startRun(options: { seed?: string; ballId: string; boundLevel: number; restore?: RunSnapshot }): void {
     this.run?.dispose();
     this.fx.clear();
 
     const run = new Run({
       profile: this.profile,
-      seed: options.seed,
+      seed: options.restore?.seed ?? options.seed,
       ballId: options.ballId,
       boundLevel: options.boundLevel,
       clock: this.clock,
+      restore: options.restore,
     });
     this.run = run;
     this.draft.ballId = options.ballId;
@@ -529,9 +571,21 @@ export class Game {
     run.bus.on('roomEntered', () => {
       this.audio.setBiome(getBiome(run.currentRoom.biome));
       this.renderer.configureFor(run.world);
+      // Entering a room is the natural save point: it is exactly the state a
+      // resume restores to.
+      this.saveRun();
+    });
+    run.bus.on('upgradeGained', () => this.saveRun());
+    run.bus.on('pickupCollected', ({ kind }) => {
+      // Interactables change the run meaningfully; plain shards are covered by the
+      // periodic save and do not deserve a write each.
+      if (kind !== 'shard') this.saveRun();
     });
     run.bus.on('achievementUnlocked', ({ id }) => this.toast(`Unlocked: ${id}`, 'rare'));
     run.bus.on('runEnded', () => {
+      // The run is over: the snapshot must not outlive it, or the player would be
+      // dropped back into a finished run on reload.
+      this.runStore.clear();
       for (const result of run.newAchievements) this.toast(`${result.def.name}`, 'rare');
     });
 
@@ -542,11 +596,48 @@ export class Game {
     this.invalidateUi();
   }
 
+  /** Resumes a saved run, falling back to the menu if it cannot be rebuilt. */
+  private resumeRun(snapshot: RunSnapshot): void {
+    try {
+      this.startRun({ ballId: snapshot.ballId, boundLevel: snapshot.boundLevel, restore: snapshot });
+      this.toast('Run resumed', 'good');
+    } catch (error) {
+      // A snapshot that cannot be rebuilt is discarded rather than retried, so a
+      // bad save can never trap the player in a boot loop.
+      console.error('Could not resume the saved run', error);
+      this.runStore.clear();
+      this.run = null;
+      this.setScreen('menu');
+    }
+  }
+
+  private saveRun(): void {
+    const run = this.run;
+    if (!run || run.finished) return;
+    try {
+      this.runStore.save(run.captureSnapshot());
+    } catch (error) {
+      // Persistence failing must never interrupt play.
+      console.warn('Could not save the run', error);
+    }
+  }
+
   private abandonRun(): void {
     const run = this.run;
     if (!run) return;
+    this.runStore.clear();
     run.finish(false, 'abandoned');
     this.setScreen('results');
+    this.invalidateUi();
+  }
+
+  /** Leaves the run on the shelf: the snapshot survives so it can be resumed. */
+  private suspendToMenu(): void {
+    this.saveRun();
+    this.run?.dispose();
+    this.run = null;
+    this.profile.flush();
+    this.setScreen('menu');
     this.invalidateUi();
   }
 
@@ -566,7 +657,22 @@ export class Game {
     this.fx.updateSettings(settings);
     this.audio.updateSettings(settings);
     this.input.updateSettings(settings);
+    this.applyInterfacePreferences();
     this.profile.flush();
+  }
+
+  /**
+   * Mirrors the motion and flashing settings onto the document root so the
+   * stylesheet can honour them. The in-game toggles have to affect the DOM panels
+   * as well as the canvas, or a player who disables motion still gets animated
+   * menus.
+   */
+  private applyInterfacePreferences(): void {
+    const settings = this.profile.settings;
+    const root = document.documentElement;
+    root.classList.toggle('bb-reduced-motion', settings.reducedMotion);
+    root.classList.toggle('bb-reduced-flashing', settings.reducedFlashing);
+    root.style.setProperty('--bb-ui-scale', `${settings.uiScale}`);
   }
 
   /* -------------------------------------------------------------- onboarding -- */

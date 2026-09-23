@@ -25,6 +25,7 @@ import { BRANCH_NAMES, UNLOCK_NODES, maxRanks, nodeCost, type UnlockBranch } fro
 import { upgradeCatalogue } from '../content/upgrades/index';
 import { RARITY_COLORS } from '../content/ids';
 import type { Profile } from '../meta/profile';
+import { describeSnapshot, type RunSnapshot } from '../run/runSave';
 import { defaultSettings, type ColorMode, type Settings, type TrajectoryMode } from '../meta/settings';
 import { bar, button, el, formatDuration, row, section, select, slider, toggle } from './dom';
 
@@ -33,6 +34,9 @@ export interface MenuHost {
   playClick: () => void;
   playHover: () => void;
   startRun: (options: { seed?: string; ballId: string; boundLevel: number }) => void;
+  /** The shelved run, if one exists. */
+  savedRun: () => RunSnapshot | null;
+  continueRun: () => void;
   refresh: () => void;
   close: () => void;
   openUnlocks: () => void;
@@ -50,6 +54,7 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
   const lockedBalls = BALL_CLASSES.filter((b) => b.unlock && !profile.isUnlocked(b.unlock));
   const maxBound = profile.maxBoundLevel();
   const history = profile.data.history.slice(-3).reverse();
+  const resume = host.savedRun();
 
   /**
    * Ball selection is a row of names and one-line identities, with the full
@@ -100,6 +105,24 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
         el('h1', { text: 'BOUNCEBOUND' }),
         el('p', { text: 'The ball is the weapon. It never stops.' }),
       ]),
+
+      // Resuming comes first and is visually loudest: if a run is shelved, it is
+      // almost always what the player came back for.
+      resume
+        ? el('div', { class: 'bb-resume' }, [
+            button({
+              label: 'Continue run',
+              className: 'bb-primary',
+              hint: 'C',
+              onClick: () => {
+                host.playClick();
+                host.continueRun();
+              },
+              onHover: host.playHover,
+            }),
+            el('p', { class: 'bb-note', text: `${getBallClass(resume.ballId).name} - ${describeSnapshot(resume)}` }),
+          ])
+        : null,
 
       el('div', { class: 'bb-menu-grid' }, [
         el('div', {}, [
@@ -167,8 +190,9 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
                 ])
               : el('p', { class: 'bb-note', text: 'Complete a run to open Bound levels.' }),
             button({
-              label: 'Begin descent',
-              className: 'bb-primary',
+              label: resume ? 'Begin new descent' : 'Begin descent',
+              className: resume ? '' : 'bb-primary',
+              title: resume ? 'Discards the run in progress' : undefined,
               hint: 'Enter',
               onClick: () => {
                 host.playClick();

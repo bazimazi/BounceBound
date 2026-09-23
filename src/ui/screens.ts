@@ -28,8 +28,10 @@ export interface ScreenHost {
   profile: Profile;
   playClick: () => void;
   playHover: () => void;
-  /** Leaves the current run and returns to the menu. */
+  /** Ends the run for good and shows the summary. */
   abandonRun: () => void;
+  /** Leaves the run shelved so it can be resumed later. */
+  suspendRun: () => void;
   resume: () => void;
   startNewRun: () => void;
   openMenu: () => void;
@@ -348,8 +350,17 @@ export function renderPause(root: HTMLElement, run: Run, host: ScreenHost): void
         button({ label: 'Settings', onClick: () => { host.playClick(); host.openSettings(); } }),
         button({ label: 'Journal', onClick: () => { host.playClick(); host.openJournal(); } }),
         button({
+          label: 'Save and quit',
+          title: 'Keeps this run so you can continue it later',
+          onClick: () => {
+            host.playClick();
+            host.suspendRun();
+          },
+        }),
+        button({
           label: 'Abandon run',
           className: 'bb-danger',
+          title: 'Ends the run and discards it',
           onClick: () => {
             host.playClick();
             host.abandonRun();

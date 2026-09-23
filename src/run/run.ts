@@ -46,6 +46,7 @@ import { generateMap, choicesFrom, type MapNode, type RunMap } from '../gen/mapg
 import { generateRoom, type GeneratedRoom, type Interactable } from '../gen/roomgen';
 import { ROOM_H, ROOM_W } from '../gen/templates';
 import type { Profile } from '../meta/profile';
+import { RUN_SAVE_VERSION, type RunSnapshot } from './runSave';
 
 export type RunPhase =
   | 'playing'
@@ -115,6 +116,11 @@ export interface RunOptions {
   /** Fixed biome list, used by challenge modes. */
   biomes?: BiomeId[];
   clock?: Clock;
+  /**
+   * Resumes a previously saved run. The map and rooms are regenerated from the
+   * seed; only accumulated state is taken from the snapshot.
+   */
+  restore?: RunSnapshot;
 }
 
 /** Per-room flags used by mastery achievements. */
@@ -177,7 +183,10 @@ export class Run {
     this.rng = new Rng(`${this.seed}:play`);
     resetWorldIds();
 
+    // A resumed run must use the biome list it was generated with, or the map
+    // would differ from the one the player was routing through.
     this.biomes =
+      options.restore?.biomes ??
       options.biomes ??
       availableBiomes((id) => this.profile.isUnlocked(id))
         .map((b) => b.id)
@@ -201,7 +210,7 @@ export class Run {
       },
     });
 
-    this.applyStartingState();
+    this.applyStartingState(options.restore);
 
     this.telemetry = {
       startedAt: Date.now(),
@@ -228,19 +237,57 @@ export class Run {
       damageByEffect: {},
     };
 
-    this.currentNode = this.map.nodesById.get(this.map.acts[0].entranceIds[0])!;
+    const restore = options.restore;
+    const startNode = restore ? this.map.nodesById.get(restore.nodeId) : undefined;
+    this.currentNode = startNode ?? this.map.nodesById.get(this.map.acts[0].entranceIds[0])!;
+
+    if (restore) {
+      // Map progress: which nodes have been played, and which hidden nodes have
+      // already been revealed.
+      for (const id of restore.visitedNodes) {
+        const node = this.map.nodesById.get(id);
+        if (node) node.visited = true;
+      }
+      for (const id of restore.revealedNodes) {
+        const node = this.map.nodesById.get(id);
+        if (node) node.hidden = false;
+      }
+      this.telemetry = { ...this.telemetry, ...restore.telemetry };
+      this.shards = restore.shards;
+      this.relics = restore.relics;
+      this.rerollsLeft = restore.rerolls;
+      this.everDroppedBelowHalf = restore.droppedBelowHalf;
+      for (const id of restore.seenEvents) this.seenEvents.add(id);
+    }
+
     this.currentRoom = this.buildRoom(this.currentNode);
     this.world = this.createWorld(this.currentRoom);
     this.installListeners();
     this.populateWorld(this.currentRoom);
-    this.profile.resetPerRunCounters();
+
+    if (restore) {
+      // Vitals are applied after the world is built, because `populateWorld`
+      // rebuilds the ball from the current stat block.
+      const ball = this.world.ball;
+      ball.maxHp = restore.maxHp;
+      ball.hp = clamp(restore.hp, 1, restore.maxHp);
+      ball.shield = restore.shield;
+      ball.reviveCharges = restore.revives;
+    } else {
+      this.profile.resetPerRunCounters();
+    }
+
     this.bus.emit('runStarted', { seed: this.seed, ballId: this.ballId, boundLevel: this.bound.level });
     this.emitRoomEntered();
+    this.resumed = restore !== undefined;
   }
+
+  /** True when this run was resumed from a save rather than started fresh. */
+  resumed = false;
 
   /* ------------------------------------------------------------- start state -- */
 
-  private applyStartingState(): void {
+  private applyStartingState(restore?: RunSnapshot): void {
     const ballClass = getBallClass(this.ballId);
     const permanent = this.profile.permanentModifiers();
     // Bound penalties expressed as multipliers are applied here rather than being
@@ -263,11 +310,23 @@ export class Run {
     }
     this.build.setBallClass(base);
 
-    this.shards = this.profile.startingShards();
-    this.rerollsLeft = Math.round(this.build.stats().rerolls);
-    if (ballClass.startingUpgrade) {
-      this.build.add(ballClass.startingUpgrade);
-      this.profile.discover('upgrades', ballClass.startingUpgrade);
+    if (restore) {
+      /**
+       * Rebuild the exact build, stack by stack. The starting upgrade and starting
+       * shards are deliberately *not* granted again: they are already accounted for
+       * in the snapshot, and re-granting them would pay the player twice for
+       * reloading.
+       */
+      for (const entry of restore.upgrades) {
+        for (let i = 0; i < entry.stacks; i++) this.build.add(entry.id);
+      }
+    } else {
+      this.shards = this.profile.startingShards();
+      this.rerollsLeft = Math.round(this.build.stats().rerolls);
+      if (ballClass.startingUpgrade) {
+        this.build.add(ballClass.startingUpgrade);
+        this.profile.discover('upgrades', ballClass.startingUpgrade);
+      }
     }
     this.profile.discover('balls', this.ballId);
   }
@@ -275,12 +334,23 @@ export class Run {
   /* ----------------------------------------------------------- room lifecycle -- */
 
   private buildRoom(node: MapNode): GeneratedRoom {
+    /**
+     * Every decision here is derived from the node's own seed, never from the run's
+     * live RNG stream.
+     *
+     * Two things depend on that. Resuming a saved run rebuilds the current room
+     * without having consumed the RNG for the rooms that came before it, so a
+     * stream-dependent choice would silently produce a *different* room than the one
+     * the player was standing in. And it strengthens the seed guarantee generally:
+     * a given node is a given room, regardless of how the player got there.
+     */
+    const roomRng = new Rng(`${node.roomSeed}:archetype`);
     let archetype = node.archetype;
     // Bound levels can promote a room to elite earlier than normal.
-    if (archetype === 'combat' && node.depth >= this.bound.eliteFromDepth && this.rng.chance(0.12 * this.bound.level)) {
+    if (archetype === 'combat' && node.depth >= this.bound.eliteFromDepth && roomRng.chance(0.12 * this.bound.level)) {
       archetype = 'elite';
     }
-    if (archetype === 'respite' && this.bound.fewerRespites && this.rng.chance(0.5)) {
+    if (archetype === 'respite' && this.bound.fewerRespites && roomRng.chance(0.5)) {
       archetype = 'combat';
     }
     return generateRoom({
@@ -309,8 +379,10 @@ export class Run {
     });
     world.arenaMaterial = biome.terrainMaterial;
     if (biome.gravityLateralScale > 0) {
-      // The Rift leans sideways, consistently per room so it can be learned.
-      world.gravityX = stats.gravity * biome.gravityLateralScale * (this.rng.chance(0.5) ? 1 : -1) * 0.4;
+      // The Rift leans sideways, consistently per room so it can be learned - and
+      // seeded from the room rather than the run so a resume reproduces it.
+      const lean = new Rng(`${room.seed}:lean`).chance(0.5) ? 1 : -1;
+      world.gravityX = stats.gravity * biome.gravityLateralScale * lean * 0.4;
     }
     return world;
   }
@@ -1048,6 +1120,46 @@ export class Run {
   observeHealth(): void {
     const ball = this.world.ball;
     if (ball.hp / ball.maxHp < 0.5) this.everDroppedBelowHalf = true;
+  }
+
+  /**
+   * Captures everything needed to resume this run.
+   *
+   * No world state: the map and rooms regenerate from the seed, so a snapshot is
+   * small and cannot go stale against level generation changes. Vitals are the
+   * *current* values rather than the values at room entry, so reloading never
+   * refunds damage.
+   */
+  captureSnapshot(): RunSnapshot {
+    const ball = this.world.ball;
+    const visited: number[] = [];
+    const revealed: number[] = [];
+    for (const node of this.map.nodesById.values()) {
+      if (node.visited) visited.push(node.id);
+      if (!node.hidden) revealed.push(node.id);
+    }
+    return {
+      version: RUN_SAVE_VERSION,
+      savedAt: Date.now(),
+      seed: this.seed,
+      ballId: this.ballId,
+      boundLevel: this.bound.level,
+      biomes: this.biomes.slice(),
+      nodeId: this.currentNode.id,
+      visitedNodes: visited,
+      revealedNodes: revealed,
+      upgrades: this.build.order.map((id) => ({ id, stacks: this.build.stacksOf(id) })),
+      shards: this.shards,
+      relics: this.relics,
+      rerolls: this.rerollsLeft,
+      hp: ball.hp,
+      maxHp: ball.maxHp,
+      shield: ball.shield,
+      revives: ball.reviveCharges,
+      seenEvents: [...this.seenEvents],
+      telemetry: { ...this.telemetry },
+      droppedBelowHalf: this.everDroppedBelowHalf,
+    };
   }
 
   notify(text: string, tone: 'info' | 'good' | 'bad' | 'rare' = 'info'): void {
