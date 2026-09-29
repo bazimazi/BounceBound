@@ -26,6 +26,7 @@ import { Run } from '../run/run';
 import { RunStore, type RunSnapshot } from '../run/runSave';
 import { Renderer } from '../render/renderer';
 import { FxSystem } from '../render/fx';
+import { MenuBackdrop } from '../render/backdrop';
 import { drawControlHints, drawHud } from '../render/hud';
 import { AudioEngine } from '../audio/audio';
 import { InputManager, type ActionName } from './input';
@@ -58,6 +59,7 @@ export class Game {
   private readonly audio: AudioEngine;
   private readonly input: InputManager;
   private readonly debug = new DebugTools();
+  private readonly backdrop = new MenuBackdrop();
 
   private run: Run | null = null;
   private screen: Screen = 'menu';
@@ -262,7 +264,7 @@ export class Game {
         this.debug.drawOverlay(ctx, this.renderer.viewWidth, this.renderer.viewHeight, run, this.profile);
       }
     } else {
-      this.drawMenuBackdrop();
+      this.drawMenuBackdrop(realDelta);
       if (this.debug.enabled) {
         this.debug.drawOverlay(this.renderer.context, this.renderer.viewWidth, this.renderer.viewHeight, null, this.profile);
       }
@@ -293,6 +295,11 @@ export class Game {
       this.renderer.camera.punch(this.fx.pendingPunch);
       this.fx.pendingPunch = 0;
     }
+    const kick = this.fx.pendingKick;
+    if (kick.amount > 0) {
+      this.renderer.camera.kick(kick.x, kick.y, kick.amount);
+      kick.amount = 0;
+    }
   }
 
   /** 0..1 musical intensity, so the soundtrack tracks what is happening. */
@@ -305,32 +312,15 @@ export class Game {
     return clamp01(threat * 0.45 + combo * 0.35 + danger * 0.2 + boss);
   }
 
-  private drawMenuBackdrop(): void {
-    // A quiet animated backdrop behind the menus: the same visual language as the
-    // arena, without implying interactivity.
+  private drawMenuBackdrop(realDelta: number): void {
+    // A live backdrop behind the menus: ball classes bouncing on a lit floor, in
+    // the arena's visual language, so the title screen shows the game.
     const ctx = this.renderer.context;
     const { viewWidth: w, viewHeight: h } = this.renderer;
     ctx.setTransform(this.renderer.devicePixelRatio, 0, 0, this.renderer.devicePixelRatio, 0, 0);
-    const gradient = ctx.createLinearGradient(0, 0, 0, h);
-    gradient.addColorStop(0, '#0b0f1a');
-    gradient.addColorStop(1, '#141a2b');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, w, h);
-
-    const t = this.clock.realTime;
-    ctx.save();
-    ctx.globalAlpha = 0.18;
-    ctx.strokeStyle = '#6aa8f0';
-    ctx.lineWidth = 2;
-    for (let i = 0; i < 5; i++) {
-      const phase = t * 0.35 + i * 1.2;
-      const x = (Math.sin(phase) * 0.5 + 0.5) * w;
-      const y = h * 0.5 + Math.sin(phase * 2.3) * h * 0.32;
-      ctx.beginPath();
-      ctx.arc(x, y, 10 + i * 3, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    this.backdrop.draw(ctx, w, h, realDelta, this.profile.settings.reducedMotion);
   }
 
   /* ----------------------------------------------------------------- screens -- */

@@ -194,6 +194,23 @@ slider is the strongest "settings page" signal there is. Cards are dealt in with
 short stagger and sweep on hover, legendary and cursed picks pulse, selectable route
 nodes glow, and results numbers count in one after another.
 
+In the arena, the feedback layer borrows from the games that defined "juice":
+squash along the impact normal and stretch along velocity (Celeste), a white pop
+and jelly squash on every enemy hit plus a camera kick in the direction of the
+blow (Nuclear Throne), trauma-squared screen shake driven by smooth noise rather
+than white noise (Eiserloh's camera talk), contact flares, arcing damage numbers
+and enemies that come apart into pieces of themselves. Enemies have eyes that track
+the ball, scowl while winding up and cross out when stunned, which makes a
+telegraph readable at a glance. The ball lights the grid around it, the exit
+becomes a spinning portal when it opens, rooms open with an iris on the ball, and
+big moments (room cleared, boss defeated, synergy, a lost combo) are narrated by
+callouts that queue rather than overlap. The HUD animates every number: integrity
+keeps a fighting-game ghost of the last hit, the combo pops and escalates by tier,
+and shards count up. Bloom is pre-rendered glow sprites drawn with additive
+compositing, never `shadowBlur`, so it stays cheap. The title screen runs a small
+decorative bouncing scene with its own physics, kept apart from the seeded
+simulation.
+
 All of that is motion, so all of it is subordinate to the accessibility settings:
 *Reduce motion* and *Reduce flashing* now apply to the DOM panels as well as the
 canvas, and the interface-scale setting drives the root font size so menus scale with

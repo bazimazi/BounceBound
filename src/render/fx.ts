@@ -25,6 +25,7 @@ import type { GameEvents } from '../sim/gameEvents';
 import { ORDER } from '../sim/gameEvents';
 import { impactIntensity } from '../sim/impact';
 import { getMaterial } from '../sim/materials';
+import { getEnemyDef } from '../content/enemies';
 import type { Settings } from '../meta/settings';
 import { paletteFor } from '../meta/settings';
 
@@ -38,7 +39,7 @@ export interface Particle {
   maxLife: number;
   size: number;
   color: string;
-  /** 0 = spark (line), 1 = dot, 2 = ring, 3 = shard */
+  /** 0 = spark (line), 1 = dot, 2 = ring, 3 = shard, 4 = flare (star), 5 = glow ember */
   kind: number;
   gravity: number;
   drag: number;
@@ -62,12 +63,37 @@ export interface FloatingText {
   active: boolean;
   x: number;
   y: number;
+  vx: number;
   vy: number;
+  /** Downward acceleration; damage numbers arc, labels float. */
+  gravity: number;
   life: number;
   maxLife: number;
   text: string;
   color: string;
   size: number;
+  /** Small random tilt so a stack of numbers does not read as a column of text. */
+  tilt: number;
+  /** Uses the display face with a heavier outline. */
+  heavy: boolean;
+}
+
+/**
+ * A screen-space callout: CLEARED, SYNERGY, COMBO LOST. These are the moments the
+ * run is narrated by, so they slam in large and centred, then get out of the way.
+ */
+export interface Callout {
+  active: boolean;
+  text: string;
+  sub: string;
+  color: string;
+  life: number;
+  maxLife: number;
+  size: number;
+  /** Vertical anchor as a fraction of the view height. */
+  anchor: number;
+  /** Seconds to wait before appearing; callouts queue rather than overlap. */
+  delay: number;
 }
 
 export interface Arc {
@@ -122,12 +148,28 @@ export class FxSystem {
     active: false,
     x: 0,
     y: 0,
+    vx: 0,
     vy: -40,
+    gravity: 0,
     life: 0,
     maxLife: 0.8,
     text: '',
     color: '#fff',
     size: 14,
+    tilt: 0,
+    heavy: false,
+  }));
+
+  readonly callouts = new RingBuffer<Callout>(6, () => ({
+    active: false,
+    text: '',
+    sub: '',
+    color: '#fff',
+    life: 0,
+    maxLife: 1.4,
+    size: 48,
+    anchor: 0.3,
+    delay: 0,
   }));
 
   readonly arcs = new RingBuffer<Arc>(70, () => ({
@@ -149,6 +191,8 @@ export class FxSystem {
   pendingShake = 0;
   /** Camera zoom punch request. */
   pendingPunch = 0;
+  /** Directional camera kick request: a direction and a size in pixels. */
+  pendingKick = { x: 0, y: 0, amount: 0 };
 
   private readonly rng = new Rng('fx');
   private settings: Settings;
@@ -170,6 +214,7 @@ export class FxSystem {
     this.rings.clear();
     this.texts.clear();
     this.arcs.clear();
+    this.callouts.clear();
     this.flash.strength = 0;
   }
 
@@ -252,18 +297,110 @@ export class FxSystem {
     r.width = width;
   }
 
-  text(x: number, y: number, value: string, color: string, size = 14): void {
+  /**
+   * Floating text. Numbers pop and arc like thrown debris - up and out, then down
+   * under gravity - which reads as "that hit knocked something loose". Labels
+   * (PERFECT, BREACH) float straight up instead, so the two never get confused.
+   */
+  text(
+    x: number,
+    y: number,
+    value: string,
+    color: string,
+    size = 14,
+    options: { arc?: boolean; heavy?: boolean; life?: number } = {},
+  ): void {
     if (!this.settings.damageNumbers && /^[0-9]/.test(value)) return;
+    const arc = options.arc ?? /^[-+]?[0-9]/.test(value);
     const t = this.texts.next();
     t.active = true;
     t.x = x + this.rng.range(-6, 6);
     t.y = y;
-    t.vy = -this.rng.range(45, 75);
-    t.maxLife = 0.75;
+    t.vx = arc ? this.rng.range(-70, 70) : 0;
+    t.vy = arc ? -this.rng.range(190, 260) : -this.rng.range(45, 70);
+    t.gravity = arc ? 620 : 0;
+    t.maxLife = options.life ?? (arc ? 0.8 : 0.9);
     t.life = t.maxLife;
     t.text = value;
     t.color = color;
     t.size = size;
+    t.tilt = this.rng.range(-0.12, 0.12);
+    t.heavy = options.heavy ?? arc;
+  }
+
+  callout(text: string, color: string, options: { sub?: string; size?: number; life?: number; anchor?: number } = {}): void {
+    // Two callouts on the same frame (a boss dies, so the room clears) are
+    // narrated in sequence: the earlier one is cut short and the new one waits.
+    const anchor = options.anchor ?? 0.42;
+    let delay = 0;
+    for (const other of this.callouts.items) {
+      if (!other.active || Math.abs(other.anchor - anchor) > 0.12) continue;
+      const remaining = other.delay + other.life;
+      if (remaining > delay) {
+        if (other.life > 0.9) other.life = 0.9;
+        delay = Math.min(other.delay + other.life, 2);
+      }
+    }
+    const c = this.callouts.next();
+    c.delay = delay;
+    c.active = true;
+    c.text = text;
+    c.sub = options.sub ?? '';
+    c.color = color;
+    c.size = options.size ?? 52;
+    c.maxLife = options.life ?? 1.3;
+    c.life = c.maxLife;
+    c.anchor = anchor;
+  }
+
+  /** A four-point star at a contact: the handful of frames that say "contact". */
+  flare(x: number, y: number, size: number, color: string, life = 0.12): void {
+    const p = this.particles.next();
+    p.active = true;
+    p.x = x;
+    p.y = y;
+    p.vx = 0;
+    p.vy = 0;
+    p.maxLife = life;
+    p.life = life;
+    p.size = size;
+    p.color = color;
+    p.kind = 4;
+    p.gravity = 0;
+    p.drag = 0;
+    p.rotation = this.rng.range(0, Math.PI / 2);
+    p.spin = 0;
+  }
+
+  /** Soft glowing embers that drift up and shrink: the afterglow of a kill. */
+  embers(x: number, y: number, count: number, color: string, speed = 140): void {
+    const n = Math.max(1, Math.round(count * this.density));
+    for (let i = 0; i < n; i++) {
+      const p = this.particles.next();
+      const angle = this.rng.range(0, TAU);
+      const magnitude = speed * this.rng.range(0.2, 1);
+      p.active = true;
+      p.x = x;
+      p.y = y;
+      p.vx = Math.cos(angle) * magnitude;
+      p.vy = Math.sin(angle) * magnitude - 40;
+      p.maxLife = this.rng.range(0.45, 0.9);
+      p.life = p.maxLife;
+      p.size = this.rng.range(5, 11);
+      p.color = color;
+      p.kind = 5;
+      p.gravity = -30;
+      p.drag = 2.2;
+      p.rotation = 0;
+      p.spin = 0;
+    }
+  }
+
+  private kick(dirX: number, dirY: number, amount: number): void {
+    if (amount <= this.pendingKick.amount) return;
+    this.pendingKick.x = dirX;
+    this.pendingKick.y = dirY;
+    this.pendingKick.amount = amount;
   }
 
   bolt(x1: number, y1: number, x2: number, y2: number, color: string): void {
@@ -322,8 +459,21 @@ export class FxSystem {
         t.active = false;
         continue;
       }
+      t.vy += t.gravity * dt;
+      const drag = Math.exp(-(t.gravity > 0 ? 1.2 : 2.2) * dt);
+      t.vx *= drag;
+      t.vy *= drag;
+      t.x += t.vx * dt;
       t.y += t.vy * dt;
-      t.vy *= Math.exp(-2.2 * dt);
+    }
+    for (const c of this.callouts.items) {
+      if (!c.active) continue;
+      if (c.delay > 0) {
+        c.delay = Math.max(0, c.delay - dt);
+        continue;
+      }
+      c.life -= dt;
+      if (c.life <= 0) c.active = false;
     }
     for (const a of this.arcs.items) {
       if (!a.active) continue;
@@ -356,11 +506,20 @@ export class FxSystem {
         const count = 3 + intensity * 12;
         this.spark(ctx.px, ctx.py, ctx.outVx / outLen, ctx.outVy / outLen, count, material.edgeColor, 180 + intensity * 420);
 
+        // Every contact gets a flare, sized by intensity. It lives for a handful of
+        // frames: long enough to register, short enough never to hide anything.
+        this.flare(ctx.px, ctx.py, 10 + intensity * 26, ctx.enemy ? '#ffffff' : material.edgeColor, 0.08 + intensity * 0.05);
+
         if (ctx.isPerfect) {
           this.ring(ctx.px, ctx.py, 54 + ctx.perfectQuality * 40, colors.perfect, 0.32, 3.5);
+          this.ring(ctx.px, ctx.py, 22 + ctx.perfectQuality * 16, '#ffffff', 0.18, 2);
+          this.flare(ctx.px, ctx.py, 48 + ctx.perfectQuality * 30, colors.perfect, 0.16);
+          this.spark(ctx.px, ctx.py, ctx.nx, ctx.ny, 10, colors.perfect, 420, 1.3);
           this.screenFlash(0.1 + ctx.perfectQuality * 0.12, colors.perfect);
-          this.pendingHitStop = Math.max(this.pendingHitStop, 0.045 + ctx.perfectQuality * 0.03);
+          this.pendingHitStop = Math.max(this.pendingHitStop, (0.045 + ctx.perfectQuality * 0.03) * this.settings.hitStop);
           this.pendingPunch = Math.max(this.pendingPunch, 0.03);
+          const label = ctx.perfectQuality > 0.8 ? 'PERFECT!' : 'PERFECT';
+          this.text(ctx.px, ctx.py - 26, label, colors.perfect, 15 + ctx.perfectQuality * 5, { arc: false, heavy: true, life: 0.7 });
         }
         if (ctx.isCrit) {
           this.ring(ctx.px, ctx.py, 70, colors.crit, 0.28, 2.5);
@@ -376,6 +535,8 @@ export class FxSystem {
         if (ctx.enemy || ctx.killed || intensity > 0.75) {
           this.pendingHitStop = Math.max(this.pendingHitStop, Math.min(0.075, 0.02 + intensity * 0.05) * this.settings.hitStop);
           this.pendingShake = Math.max(this.pendingShake, intensity * 0.55);
+          // The camera is pushed the way the ball was travelling into the hit.
+          this.kick(ctx.inVx, ctx.inVy, 3 + intensity * 7);
         } else {
           this.pendingShake = Math.max(this.pendingShake, intensity * 0.12);
         }
@@ -398,10 +559,18 @@ export class FxSystem {
       'enemyKilled',
       ({ enemy, x, y }) => {
         const colors = palette();
+        const body = enemyColorOf(enemy.defId);
         this.burst(x, y, 12 + Math.min(20, enemy.maxHp / 8), enemy.status.frostTime > 0 ? colors.perfect : '#ffd0a0', 260, 3);
-        this.debris(x, y, 5, '#ffffff', 260);
+        // The enemy comes apart into pieces of itself, so a kill reads as that
+        // thing breaking rather than as a generic explosion.
+        this.debris(x, y, 7 + Math.min(8, enemy.radius / 4), body.color, 300);
+        this.debris(x, y, 4, '#ffffff', 260);
+        this.embers(x, y, 6, body.accent, 150);
+        this.flare(x, y, enemy.radius * 3.4, '#ffffff', 0.14);
         this.ring(x, y, enemy.radius * 3.2, colors.danger, 0.3, 2.5);
+        this.ring(x, y, enemy.radius * 1.8, '#ffffff', 0.16, 4);
         this.pendingShake = Math.max(this.pendingShake, 0.25);
+        this.pendingHitStop = Math.max(this.pendingHitStop, 0.04 * this.settings.hitStop);
       },
       { order: ORDER.feedback },
     );
@@ -430,7 +599,8 @@ export class FxSystem {
         }
         this.screenFlash(0.28, colors.danger);
         this.burst(payload.x, payload.y, 16, colors.danger, 300, 3.4);
-        this.text(payload.x, payload.y - 18, `-${Math.round(payload.finalAmount)}`, colors.danger, 17);
+        this.flare(payload.x, payload.y, 46, colors.danger, 0.14);
+        this.text(payload.x, payload.y - 18, `-${Math.round(payload.finalAmount)}`, colors.danger, 19);
         this.pendingShake = Math.max(this.pendingShake, 0.7);
         this.pendingHitStop = Math.max(this.pendingHitStop, 0.07 * this.settings.hitStop);
       },
@@ -453,7 +623,37 @@ export class FxSystem {
       ({ value, multiplier }) => {
         if (value % 5 !== 0) return;
         const colors = palette();
-        this.text(0, 0, `x${multiplier.toFixed(2)}`, colors.combo, 16);
+        this.text(0, 0, `x${multiplier.toFixed(2)}`, colors.combo, 16, { arc: false, heavy: true });
+      },
+      { order: ORDER.feedback },
+    );
+
+    bus.on(
+      'comboBroken',
+      ({ peak }) => {
+        if (peak < 8) return;
+        this.callout(`${peak} COMBO`, '#9aa6bf', { sub: 'LOST', size: 30, life: 1.1, anchor: 0.72 });
+      },
+      { order: ORDER.feedback },
+    );
+
+    bus.on(
+      'roomCleared',
+      () => {
+        const colors = palette();
+        this.callout('CLEARED', colors.safe, { sub: 'THE EXIT IS OPEN', size: 58, life: 1.5 });
+        this.screenFlash(0.12, colors.safe);
+      },
+      { order: ORDER.feedback },
+    );
+
+    bus.on(
+      'bossDefeated',
+      () => {
+        const colors = palette();
+        this.callout('DEFEATED', colors.reward, { size: 72, life: 2.2 });
+        this.screenFlash(0.35, '#ffffff');
+        this.pendingShake = Math.max(this.pendingShake, 1);
       },
       { order: ORDER.feedback },
     );
@@ -573,8 +773,10 @@ export class FxSystem {
 
     bus.on(
       'synergyActivated',
-      () => {
-        this.screenFlash(0.24, paletteFor(this.settings.colorMode).reward);
+      ({ name }) => {
+        const reward = paletteFor(this.settings.colorMode).reward;
+        this.screenFlash(0.24, reward);
+        this.callout(name.toUpperCase(), reward, { sub: 'SYNERGY', size: 40, life: 1.8 });
         this.pendingHitStop = Math.max(this.pendingHitStop, 0.1 * this.settings.hitStop);
       },
       { order: ORDER.feedback },
@@ -602,5 +804,15 @@ export class FxSystem {
   /** Alpha for a decaying effect, eased so the tail is not abrupt. */
   static fade(life: number, maxLife: number): number {
     return clamp01(life / maxLife) ** 0.7;
+  }
+}
+
+/** Body and accent colour of an enemy, tolerant of ids missing from the catalogue. */
+function enemyColorOf(defId: string): { color: string; accent: string } {
+  try {
+    const def = getEnemyDef(defId);
+    return { color: def.color, accent: def.accent };
+  } catch {
+    return { color: '#ffd0a0', accent: '#ffffff' };
   }
 }

@@ -10,31 +10,66 @@
  * and they are all about *shape* rather than colour:
  *
  *  - Corners are clipped, not rounded. Angular silhouettes match the arena's
- *    geometry; border-radius reads as a document.
- *  - Headings are uppercase with wide tracking, and numerals are tabular and
+ *    geometry; border-radius reads as a document. (The exceptions are things
+ *    that are round in the world: balls and map tokens.)
+ *  - Headings are uppercase in a display face, and numerals are tabular and
  *    oversized, so panels are dominated by numbers rather than sentences.
  *  - Panels get a hard accent rule along the top edge instead of a soft shadow.
  *  - Form controls are restyled away from their browser defaults, because a
  *    native range slider is the single strongest "this is a settings page" signal.
+ *
+ * A second pass added *motion*, in the vocabulary of the games players compare
+ * this one to: cards that are dealt, float and tilt like objects; buttons that
+ * lift and squash; panels that spring open; numbers that count up. Motion is
+ * never load-bearing - every click resolves immediately and every animation is
+ * switched off by the accessibility settings at the bottom of this file.
  */
 
 :root {
   --bb-bg: #070910;
-  --bb-panel: rgba(12, 16, 26, 0.94);
+  --bb-panel: rgba(12, 16, 26, 0.93);
+  /* Translucent surface for screens that sit over the animated backdrop. */
+  --bb-glass: rgba(10, 14, 24, 0.62);
   --bb-panel-edge: rgba(150, 180, 230, 0.16);
-  --bb-text: #e8eef8;
-  --bb-text-dim: #93a3bd;
+  --bb-text: #eef3fb;
+  --bb-text-dim: #97a7c0;
   --bb-accent: #6aa8f0;
+  --bb-accent-hot: #a8d4ff;
   --bb-good: #5ce8a0;
   --bb-bad: #ff6b85;
   --bb-warn: #ffd15c;
   --bb-rare: #f0b14a;
   --bb-radius: 0px;
-  --bb-font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Russo One for anything that should read as a game title - headings, names,
+     big numbers, buttons - and Chakra Petch for everything the player reads at
+     length. Both fall back to system faces, so offline play only looks plainer. */
+  --bb-display: 'Russo One', 'Chakra Petch', system-ui, sans-serif;
+  --bb-font: 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --bb-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* Angular corner notch used across panels, cards and buttons. */
   --bb-notch: 10px;
+  --bb-cut: polygon(
+    var(--bb-notch) 0,
+    100% 0,
+    100% calc(100% - var(--bb-notch)),
+    calc(100% - var(--bb-notch)) 100%,
+    0 100%,
+    0 var(--bb-notch)
+  );
+  --bb-cut-sm: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
+  /* Easing. The spring overshoots, which is what makes a lift feel physical; the
+     out curve is for things that should arrive fast and settle without bouncing. */
+  --bb-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --bb-out: cubic-bezier(0.22, 1, 0.36, 1);
   color-scheme: dark;
+}
+
+/* Registered so the legendary foil can animate its gradient angle smoothly;
+   unregistered custom properties can only jump between values. */
+@property --bb-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
 }
 
 * {
@@ -87,15 +122,34 @@ body {
   position: absolute;
   inset: 0;
   display: none;
-  place-items: center;
   padding: 2rem 1.5rem;
   overflow-y: auto;
-  background: radial-gradient(circle at 50% 40%, rgba(8, 10, 18, 0.72), rgba(4, 5, 10, 0.92));
+  background: radial-gradient(circle at 50% 40%, rgba(8, 10, 18, 0.66), rgba(4, 5, 10, 0.9));
   backdrop-filter: blur(3px);
 }
 
 .overlay.bb-overlay-active {
   display: grid;
+  animation: bb-fade 0.28s var(--bb-out) both;
+}
+
+/* Auto margins centre the panel, and - unlike place-items - fall back to the top
+   edge when a panel is taller than the window, so nothing is scrolled out of reach. */
+.overlay > * {
+  margin: auto;
+}
+
+/* The title screen sits over a live scene, so it only vignettes the edges. The
+   panels themselves are glass; the scene reads through them. */
+.overlay:has(.bb-panel-menu) {
+  background: radial-gradient(ellipse 80% 70% at 50% 42%, transparent 40%, rgba(4, 5, 10, 0.55));
+  backdrop-filter: none;
+}
+
+@keyframes bb-fade {
+  from {
+    opacity: 0;
+  }
 }
 
 .bb-panel {
@@ -105,20 +159,13 @@ body {
   border: 1px solid var(--bb-panel-edge);
   /* Clipped corners rather than rounded: angular reads as a game, round reads as
      a document. */
-  clip-path: polygon(
-    var(--bb-notch) 0,
-    100% 0,
-    100% calc(100% - var(--bb-notch)),
-    calc(100% - var(--bb-notch)) 100%,
-    0 100%,
-    0 var(--bb-notch)
-  );
+  clip-path: var(--bb-cut);
   padding: 1.5rem 1.75rem;
-  animation: bb-rise 0.16s ease-out;
+  animation: bb-panel-open 0.26s var(--bb-out) both;
+  transform-origin: 50% 35%;
 }
 
-/* A hard accent rule along the top edge, in place of a soft drop shadow, with a
-   light sweep that runs across it once as the panel opens. */
+/* A hard accent rule along the top edge, in place of a soft drop shadow. */
 .bb-panel::before {
   content: '';
   position: absolute;
@@ -137,11 +184,22 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: repeating-linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.022) 0 1px,
-    transparent 1px 3px
-  );
+  background: repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.022) 0 1px, transparent 1px 3px);
+}
+
+/* A bare panel has no box at all. Used where the content should float over the
+   scene - the reward hand, the title screen - rather than sit in a window. */
+.bb-panel-bare {
+  background: none;
+  border: 0;
+  clip-path: none;
+  padding: 0;
+}
+
+.bb-panel-bare::before,
+.bb-panel-bare::after,
+.bb-panel-bare .bb-panel-head::before {
+  display: none;
 }
 
 /* Corner brackets, drawn on a wrapper element so they sit above the scanlines. */
@@ -159,35 +217,34 @@ body {
 
 .bb-panel-head {
   position: relative;
+  margin-bottom: 1.25rem;
 }
 
 .bb-panel-wide {
   width: min(84rem, 100%);
 }
 
+/* Panels spring open: a fast scale-and-rise with a slight overshoot, so the panel
+   arrives rather than appears. Short enough that it never delays a read. */
+@keyframes bb-panel-open {
+  0% {
+    opacity: 0;
+    transform: translateY(1.1rem) scale(0.95);
+  }
+  65% {
+    opacity: 1;
+    transform: translateY(-0.2rem) scale(1.006);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* Generic staggered rise, used by lists (routes, tiles, entries). */
 @keyframes bb-rise {
   from {
     opacity: 0;
-    transform: translateY(0.75rem) scale(0.985);
-  }
-}
-
-/* Cards deal in one at a time. The stagger is short enough not to delay input -
-   the last card is up in under a fifth of a second - but it makes a reward feel
-   dealt rather than printed. */
-@keyframes bb-deal {
-  from {
-    opacity: 0;
-    transform: translateY(1.1rem) rotate(-0.6deg);
-  }
-}
-
-@keyframes bb-sweep {
-  from {
-    transform: translateX(-120%);
-  }
-  to {
-    transform: translateX(220%);
+    transform: translateY(0.9rem);
   }
 }
 
@@ -201,29 +258,21 @@ body {
   }
 }
 
-@keyframes bb-count-in {
-  from {
-    opacity: 0;
-    transform: translateY(-0.35rem);
-  }
-}
-
-.bb-panel-head {
-  margin-bottom: 1.25rem;
-}
-
 .bb-panel-head h2 {
   margin: 0;
-  font-size: 1.5rem;
-  font-weight: 800;
+  font-family: var(--bb-display);
+  font-size: 1.7rem;
+  font-weight: 400;
+  line-height: 1.1;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 1.4rem color-mix(in srgb, var(--bb-accent) 35%, transparent), 0 2px 0 rgba(0, 0, 0, 0.5);
 }
 
 .bb-sub {
-  margin: 0.35rem 0 0;
+  margin: 0.4rem 0 0;
   color: var(--bb-text-dim);
-  font-size: 0.9rem;
+  font-size: 0.92rem;
   line-height: 1.5;
 }
 
@@ -250,15 +299,33 @@ body {
   margin-bottom: 1.25rem;
 }
 
+/* Section headers: small display caps with an accent tick, a label rather than a
+   title, so they organise a panel without competing with its content. */
 .bb-section h3 {
-  margin: 0 0 0.6rem;
-  padding-bottom: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.7rem;
+  padding-bottom: 0.35rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.18em;
+  font-family: var(--bb-display);
+  font-size: 0.72rem;
+  font-weight: 400;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--bb-text-dim);
+}
+
+.bb-section h3::before,
+.bb-branch h3::before,
+.bb-journal-col h3::before {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  flex: none;
+  background: var(--bb-accent);
+  transform: rotate(45deg);
+  box-shadow: 0 0 0.5rem var(--bb-accent);
 }
 
 .bb-row {
@@ -274,36 +341,75 @@ body {
 
 .bb-stack {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.55rem;
 }
 
 /* ------------------------------------------------------------------ buttons -- */
 
+/*
+ * Buttons draw their clipped shape on two pseudo-elements - an edge layer and a
+ * fill layer inset by a pixel - instead of clipping the button itself. Clipping
+ * the element would also clip its glow and its focus outline; drawing the shape
+ * underneath lets the primary button glow outside its own silhouette while the
+ * silhouette stays angular.
+ */
 .bb-btn {
+  --btn-edge: rgba(255, 255, 255, 0.2);
+  --btn-fill: rgba(22, 29, 46, 0.92);
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   align-items: center;
-  gap: 0.55rem;
-  padding: 0.6rem 1.1rem;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 0.66rem 1.2rem;
+  background: none;
+  border: 0;
   color: var(--bb-text);
-  font: inherit;
-  font-size: 0.82rem;
-  font-weight: 700;
+  font-family: var(--bb-display);
+  font-size: 0.8rem;
+  font-weight: 400;
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.08em;
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, transform 0.08s;
+  transition: transform 0.24s var(--bb-spring), filter 0.2s;
 }
 
-.bb-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: var(--bb-accent);
+.bb-btn::before,
+.bb-btn::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  clip-path: var(--bb-cut-sm);
 }
 
+.bb-btn::before {
+  inset: 0;
+  background: var(--btn-edge);
+}
+
+.bb-btn::after {
+  inset: 1px;
+  background: var(--btn-fill);
+}
+
+.bb-btn:hover:not(:disabled),
+.bb-btn:focus-visible {
+  --btn-edge: var(--bb-accent);
+  --btn-fill: rgba(36, 50, 78, 0.95);
+  transform: translateY(-2px) scale(1.03);
+}
+
+/* Press squash: fast in, and the spring on release makes it pop back. */
 .bb-btn:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.96);
+  transition-duration: 0.06s;
+}
+
+.bb-btn:focus-visible {
+  outline: 2px solid var(--bb-accent-hot);
+  outline-offset: 3px;
 }
 
 .bb-btn:disabled {
@@ -311,226 +417,385 @@ body {
   cursor: not-allowed;
 }
 
+/* The primary action glows and carries a sheen that sweeps across it every few
+   seconds: the one moving thing on a static screen is where the eye goes. */
 .bb-btn.bb-primary {
-  background: var(--bb-accent);
-  border-color: var(--bb-accent);
-  color: #05080f;
+  --btn-edge: #cfe6ff;
+  --btn-fill: linear-gradient(180deg, #9ccdff, var(--bb-accent) 55%, #3c78c8);
   width: 100%;
-  justify-content: center;
-  font-size: 0.95rem;
-  padding: 0.85rem 1rem;
-  animation: bb-pulse-glow 2.8s ease-in-out infinite;
+  color: #04101f;
+  font-size: 1rem;
+  padding: 0.95rem 1rem;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+  filter: drop-shadow(0 0 0.8rem color-mix(in srgb, var(--bb-accent) 55%, transparent));
+  animation: bb-cta-glow 2.8s ease-in-out infinite;
 }
 
-.bb-btn.bb-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bb-accent) 80%, white);
-  border-color: white;
+.bb-btn.bb-primary::after {
+  background: linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.6) 50%, transparent 60%) no-repeat,
+    var(--btn-fill);
+  background-size: 300% 100%, 100% 100%;
+  background-position: 100% 0, 0 0;
+  animation: bb-sheen 3.4s var(--bb-out) infinite 0.8s;
 }
 
-/* Every button gets a bracket on the left edge on hover: a small, consistent
-   "this is selectable" cue that costs no layout. */
-.bb-btn::before {
-  content: '';
-  width: 0;
-  border-left: 2px solid var(--bb-accent);
-  align-self: stretch;
-  transition: width 0.12s;
+.bb-btn.bb-primary:hover:not(:disabled),
+.bb-btn.bb-primary:focus-visible {
+  --btn-edge: #ffffff;
+  --btn-fill: linear-gradient(180deg, #bfe0ff, #82bbf6 55%, #4b88d8);
 }
 
-.bb-btn:hover:not(:disabled)::before {
-  width: 4px;
+@keyframes bb-cta-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0.6rem color-mix(in srgb, var(--bb-accent) 45%, transparent));
+  }
+  50% {
+    filter: drop-shadow(0 0 1.3rem color-mix(in srgb, var(--bb-accent) 85%, transparent));
+  }
+}
+
+@keyframes bb-sheen {
+  0% {
+    background-position: 100% 0, 0 0;
+  }
+  45%,
+  100% {
+    background-position: 0% 0, 0 0;
+  }
 }
 
 .bb-btn.bb-danger {
-  border-color: rgba(255, 107, 133, 0.5);
+  --btn-edge: rgba(255, 107, 133, 0.5);
   color: var(--bb-bad);
 }
 
+.bb-btn.bb-danger:hover:not(:disabled),
+.bb-btn.bb-danger:focus-visible {
+  --btn-edge: var(--bb-bad);
+  --btn-fill: rgba(70, 22, 36, 0.95);
+}
+
+/* Key hints are drawn as small physical key caps: a darker bottom edge gives
+   them depth, which reads as "press this" rather than as a label. */
 kbd {
-  font: 600 0.72rem var(--bb-font);
-  padding: 0.1rem 0.35rem;
-  border-radius: 4px;
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.35rem;
+  font: 600 0.66rem var(--bb-font);
+  letter-spacing: 0.04em;
+  padding: 0.08rem 0.35rem 0.04rem;
+  border-radius: 3px;
   background: rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom-width: 2px;
   color: var(--bb-text-dim);
+  text-shadow: none;
+}
+
+.bb-primary kbd {
+  background: rgba(4, 16, 31, 0.28);
+  border-color: rgba(4, 16, 31, 0.35);
+  color: #06182e;
 }
 
 /* -------------------------------------------------------------------- cards -- */
 
+/*
+ * Upgrade cards are portrait objects, in the manner of a card game rather than a
+ * list of options. Three layers, each with one job:
+ *
+ *  - the button: deal-in and idle float (individual `translate`/`rotate`/`scale`
+ *    properties for the deal, `transform` for the float, so they compose), the
+ *    rarity glow behind it, and the 3D perspective;
+ *  - the frame: the rarity border, and the pointer tilt on hover;
+ *  - the face: the content, clipped inside the frame.
+ */
 .bb-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
-  gap: 0.85rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 1.4rem 0.5rem 1.2rem;
 }
 
 .bb-card {
   --rarity: #9fb3cc;
+  --fam: #9fb3cc;
+  --glow: 0;
+  --glow-boost: 0;
   position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  text-align: left;
-  padding: 0.85rem 0.95rem 2.2rem;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--rarity) 10%, transparent), rgba(255, 255, 255, 0.015));
-  border: 1px solid color-mix(in srgb, var(--rarity) 45%, transparent);
-  border-top: 3px solid var(--rarity);
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
+  flex: 0 0 13.75rem;
+  width: 13.75rem;
+  min-height: 20rem;
+  margin: 0;
+  padding: 0;
+  background: none;
+  border: 0;
   color: var(--bb-text);
   font: inherit;
+  text-align: center;
   cursor: pointer;
-  transition: transform 0.1s, box-shadow 0.12s, border-color 0.12s;
+  perspective: 800px;
+  -webkit-tap-highlight-color: transparent;
+  animation: bb-card-deal 0.6s var(--bb-spring) backwards, bb-card-float 3.8s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 90ms + 60ms), calc(var(--i, 0) * -1.4s);
 }
 
-/* Dealt in sequence. Six positions is more than any hand uses. */
-.bb-card {
-  animation: bb-deal 0.22s ease-out backwards;
+.bb-card:focus-visible {
+  outline: none;
 }
 
-.bb-card:nth-child(1) { animation-delay: 0s; }
-.bb-card:nth-child(2) { animation-delay: 0.045s; }
-.bb-card:nth-child(3) { animation-delay: 0.09s; }
-.bb-card:nth-child(4) { animation-delay: 0.135s; }
-.bb-card:nth-child(5) { animation-delay: 0.18s; }
-.bb-card:nth-child(6) { animation-delay: 0.225s; }
-
-.bb-card:hover:not(:disabled) {
-  transform: translateY(-4px);
-  border-color: var(--rarity);
-  box-shadow: 0 0.75rem 2.5rem color-mix(in srgb, var(--rarity) 30%, transparent),
-    inset 0 0 2rem color-mix(in srgb, var(--rarity) 10%, transparent);
+/* Dealt from below with a spin, each card turning the opposite way to its
+   neighbour, and landing with a spring overshoot. */
+@keyframes bb-card-deal {
+  from {
+    opacity: 0;
+    translate: 0 70vh;
+    rotate: calc(-16deg + var(--i, 0) * 11deg);
+    scale: 0.6;
+  }
 }
 
-/* A light sweep across the card on hover, clipped to its bounds. */
-.bb-card > header::after {
+/* The idle float is out of phase per card (see the negative delay above), so the
+   hand breathes rather than bobbing in unison. */
+@keyframes bb-card-float {
+  0%,
+  100% {
+    transform: translateY(3px) rotate(-0.8deg);
+  }
+  50% {
+    transform: translateY(-4px) rotate(0.8deg);
+  }
+}
+
+/* Rarity glow: a blurred slab of the rarity colour behind the card. It lives on
+   the button, outside the frame's clip, so it can spill past the silhouette. */
+.bb-card::before {
   content: '';
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 35%;
+  inset: 8% 6%;
+  z-index: 0;
+  background: var(--rarity);
+  filter: blur(22px);
+  opacity: calc(var(--glow) + var(--glow-boost));
   pointer-events: none;
-  background: linear-gradient(100deg, transparent, color-mix(in srgb, var(--rarity) 22%, transparent), transparent);
-  opacity: 0;
+  transition: opacity 0.25s;
 }
 
-.bb-card:hover:not(:disabled) > header::after {
-  opacity: 1;
-  animation: bb-sweep 0.55s ease-out;
+.bb-card-frame {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  padding: 2px;
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--rarity) 55%, #e8eef8),
+    color-mix(in srgb, var(--rarity) 35%, #0b0f18) 45%,
+    color-mix(in srgb, var(--rarity) 55%, #0b0f18)
+  );
+  clip-path: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+  transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transition: transform 0.5s var(--bb-spring), filter 0.2s;
+  will-change: transform;
 }
 
-.bb-card > header {
-  position: static;
+/* Hover and keyboard focus look the same, so a keyboard player gets the full
+   presentation too. Tilt comes from the pointer; focus lifts without tilting. */
+.bb-card:hover:not(:disabled) .bb-card-frame,
+.bb-card:focus-visible .bb-card-frame {
+  transform: translateY(-0.75rem) scale(1.06) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transition: transform 0.2s var(--bb-out), filter 0.2s;
 }
 
-/* Legendary and cursed cards announce themselves: these are the run-defining
-   picks, and the moment of seeing one should register. */
-.bb-card-legendary {
-  box-shadow: inset 0 0 2.5rem color-mix(in srgb, var(--rarity) 16%, transparent);
+.bb-card:hover:not(:disabled),
+.bb-card:focus-visible {
+  --glow-boost: 0.35;
+  z-index: 2;
 }
 
-.bb-card-legendary::before,
-.bb-card-cursed::before {
+.bb-card:focus-visible .bb-card-frame {
+  background: linear-gradient(165deg, #ffffff, var(--rarity) 50%, #ffffff);
+}
+
+.bb-card-face {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.95rem 3.1rem;
+  overflow: hidden;
+  background: radial-gradient(130% 55% at 50% 0%, color-mix(in srgb, var(--fam) 14%, transparent), transparent 70%),
+    linear-gradient(180deg, #131a2a, #0a0e17);
+  clip-path: polygon(13px 0, 100% 0, 100% calc(100% - 13px), calc(100% - 13px) 100%, 0 100%, 0 13px);
+}
+
+/* The emblem: a large family glyph in a lit well. It is the first thing read,
+   which is the point - family is the fastest way to tell cards apart. */
+.bb-card-emblem {
+  position: relative;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  height: 7.4rem;
+  margin: 0 -0.95rem 0.15rem;
+  color: var(--fam);
+  background: radial-gradient(circle at 50% 55%, color-mix(in srgb, var(--fam) 30%, transparent), transparent 62%),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.035) 0 2px, transparent 2px 9px);
+  border-bottom: 1px solid color-mix(in srgb, var(--rarity) 35%, transparent);
+}
+
+.bb-card-emblem::before {
   content: '';
   position: absolute;
-  inset: -1px;
-  pointer-events: none;
-  border: 1px solid color-mix(in srgb, var(--rarity) 70%, transparent);
-  animation: bb-pulse-glow 2.4s ease-in-out infinite;
+  width: 5.7rem;
+  height: 5.7rem;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--fam) 40%, transparent);
+  box-shadow: inset 0 0 1.6rem color-mix(in srgb, var(--fam) 22%, transparent),
+    0 0 1.2rem color-mix(in srgb, var(--fam) 12%, transparent);
 }
 
-.bb-card-disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
+.bb-card-glyph {
+  position: relative;
+  display: block;
+  width: 4.4rem;
+  height: 4.4rem;
+  /* A little parallax: the glyph drifts with the pointer, against the tilt. */
+  translate: calc(var(--px, 0) * 5px) calc(var(--py, 0) * 5px);
+  transition: transform 0.45s var(--bb-spring), translate 0.2s var(--bb-out);
+}
+
+.bb-card-glyph svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  stroke-width: 2.6;
+  filter: drop-shadow(0 0 0.55rem color-mix(in srgb, var(--fam) 75%, transparent));
+}
+
+.bb-card:hover:not(:disabled) .bb-card-glyph,
+.bb-card:focus-visible .bb-card-glyph {
+  transform: scale(1.12) rotate(-5deg);
+}
+
+.bb-card-stacks,
+.bb-card-new {
+  position: absolute;
+  top: 0.55rem;
+  font-family: var(--bb-display);
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  padding: 0.14rem 0.38rem;
+}
+
+.bb-card-stacks {
+  left: 0.9rem;
+  color: var(--bb-text);
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.bb-card-new {
+  right: 0.55rem;
+  background: var(--bb-warn);
+  color: #100c04;
+  clip-path: var(--bb-cut-sm);
+  box-shadow: 0 0 0.8rem rgba(255, 209, 92, 0.6);
 }
 
 .bb-card header {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 0.5rem;
+  justify-content: center;
 }
 
 .bb-card-name {
-  font-size: 0.98rem;
-  font-weight: 800;
+  font-family: var(--bb-display);
+  font-size: 1.04rem;
+  line-height: 1.15;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--rarity);
-}
-
-.bb-card-stacks {
-  font-family: var(--bb-mono);
-  font-size: 0.7rem;
-  color: var(--bb-text-dim);
-}
-
-.bb-card-new {
-  font-size: 0.62rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  padding: 0.1rem 0.3rem;
-  border-radius: 3px;
-  background: var(--bb-warn);
-  color: #100c04;
+  color: color-mix(in srgb, var(--rarity) 60%, #ffffff);
+  text-shadow: 0 0 0.9rem color-mix(in srgb, var(--rarity) 55%, transparent), 0 2px 0 rgba(0, 0, 0, 0.6);
 }
 
 .bb-card-text {
   margin: 0;
-  font-size: 0.86rem;
-  line-height: 1.5;
+  font-size: 0.85rem;
+  line-height: 1.42;
   color: var(--bb-text);
 }
 
 .bb-card-cost {
   margin: 0;
-  font-size: 0.8rem;
-  line-height: 1.45;
+  font-size: 0.78rem;
+  line-height: 1.4;
   color: var(--bb-bad);
 }
 
 .bb-card-synergy {
   margin: 0;
-  font-size: 0.7rem;
-  line-height: 1.4;
+  padding: 0.2rem 0.5rem;
+  font-family: var(--bb-display);
+  font-size: 0.62rem;
+  line-height: 1.35;
+  letter-spacing: 0.08em;
   color: var(--bb-rare);
-  font-weight: 800;
-  letter-spacing: 0.06em;
+  background: rgba(240, 177, 74, 0.1);
+  border: 1px solid rgba(240, 177, 74, 0.35);
 }
 
+/* Stat deltas as small tinted pills: the sign and colour carry the meaning. */
 .bb-card-stats {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem 0.6rem;
-  font-size: 0.74rem;
+  justify-content: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.bb-card-stats li {
+  padding: 0.12rem 0.45rem;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
 }
 
 .bb-card footer {
   position: absolute;
-  bottom: 0.6rem;
-  left: 0.95rem;
-  right: 0.95rem;
-  display: flex;
-  justify-content: space-between;
-  font-family: var(--bb-mono);
-  font-size: 0.8rem;
-  color: var(--bb-text-dim);
+  bottom: 0.75rem;
+  left: 50%;
+  translate: -50% 0;
+  display: grid;
+  place-items: center;
 }
 
 /* The number key is drawn as a physical key cap, which reads as a game prompt. */
 .bb-card-key {
-  justify-content: flex-end;
-}
-
-.bb-card-key::before {
-  content: '';
+  min-width: 1.8rem;
+  height: 1.8rem;
+  padding: 0 0.4rem;
+  font-family: var(--bb-display);
+  font-size: 0.85rem;
+  color: var(--bb-text);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(0, 0, 0, 0.35));
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-bottom-width: 3px;
+  border-radius: 4px;
 }
 
 .bb-card-price {
+  font-family: var(--bb-display);
+  font-size: 0.95rem;
   color: var(--bb-warn);
-  font-weight: 700;
+  text-shadow: 0 0 0.6rem rgba(255, 209, 92, 0.5);
 }
 
 .bb-card-price::after {
@@ -542,168 +807,653 @@ kbd {
   color: var(--bb-bad);
 }
 
+/* Glossy highlight that follows the pointer, and a one-shot light sweep when the
+   pointer arrives. Both sit over the face, inside the frame's clip. */
+.bb-card-shine {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: radial-gradient(circle at var(--mx, 50%) var(--my, 30%), rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.05) 28%, transparent 55%);
+  mix-blend-mode: screen;
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.bb-card-shine::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 40%, rgba(255, 255, 255, 0.28) 50%, transparent 60%) no-repeat;
+  background-size: 250% 100%;
+  background-position: 120% 0;
+}
+
+.bb-card:hover:not(:disabled) .bb-card-shine,
+.bb-card:focus-visible .bb-card-shine {
+  opacity: 1;
+}
+
+.bb-card:hover:not(:disabled) .bb-card-shine::after,
+.bb-card:focus-visible .bb-card-shine::after {
+  animation: bb-card-sweep 0.7s var(--bb-out) both;
+}
+
+@keyframes bb-card-sweep {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -20% 0;
+  }
+}
+
+/* Rarity. Common is plain; each step up adds one thing - a tinted edge, a glow,
+   animated foil - so rarity is legible from the silhouette alone. */
+.bb-card-uncommon {
+  --glow: 0.18;
+}
+
+.bb-card-rare {
+  --glow: 0.42;
+}
+
+.bb-card-rare .bb-card-frame {
+  background: linear-gradient(165deg, #d8ecff, var(--rarity) 30%, #1d3558 60%, var(--rarity));
+}
+
+/* Legendary: a gold foil border that rotates, a holographic sheen across the face
+   that follows the pointer, and a slow glow pulse. The run-defining pick should
+   register the instant it is dealt. */
+.bb-card-legendary {
+  --glow: 0.5;
+}
+
+.bb-card-legendary::before {
+  animation: bb-legend-pulse 2.4s ease-in-out infinite;
+}
+
+.bb-card-legendary .bb-card-frame {
+  padding: 3px;
+  background: conic-gradient(from var(--bb-angle), #f0b14a, #fff4c8, #c47a1c, #ffe28a, #9a5a14, #ffd27a, #f0b14a);
+  animation: bb-foil-spin 4.5s linear infinite;
+}
+
+.bb-card-legendary .bb-card-face::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    115deg,
+    transparent 22%,
+    rgba(255, 214, 130, 0.2) 34%,
+    rgba(255, 255, 255, 0.26) 44%,
+    rgba(160, 220, 255, 0.16) 52%,
+    rgba(255, 170, 90, 0.14) 60%,
+    transparent 72%
+  );
+  background-size: 240% 240%;
+  background-position: 30% 30%;
+  mix-blend-mode: color-dodge;
+  opacity: 0.55;
+  animation: bb-foil-drift 5s ease-in-out infinite alternate;
+}
+
+.bb-card-legendary:hover:not(:disabled) .bb-card-face::after {
+  animation: none;
+  background-position: var(--mx, 50%) var(--my, 50%);
+}
+
+.bb-card-legendary .bb-card-emblem {
+  background: radial-gradient(circle at 50% 55%, rgba(255, 210, 120, 0.4), transparent 62%),
+    repeating-conic-gradient(from 0deg at 50% 55%, rgba(255, 220, 150, 0.08) 0 6deg, transparent 6deg 18deg);
+}
+
+@keyframes bb-foil-spin {
+  to {
+    --bb-angle: 360deg;
+  }
+}
+
+@keyframes bb-foil-drift {
+  from {
+    background-position: 0% 0%;
+  }
+  to {
+    background-position: 100% 100%;
+  }
+}
+
+@keyframes bb-legend-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+/* Cursed: a bruised red-to-violet frame and smoke that drifts and swells behind
+   the card. It should look tempting and wrong at once. */
+.bb-card-cursed {
+  --glow: 0.5;
+}
+
+.bb-card-cursed::before {
+  inset: 2% 0;
+  background: radial-gradient(circle at 30% 35%, #c02868, transparent 60%), radial-gradient(circle at 70% 70%, #6a2cc8, transparent 60%);
+  animation: bb-smoke 3.2s ease-in-out infinite alternate;
+}
+
+.bb-card-cursed .bb-card-frame {
+  background: linear-gradient(165deg, #ff6a92, #4a1034 45%, #1a0a24 60%, #9a48ff);
+}
+
+.bb-card-cursed .bb-card-face {
+  background: radial-gradient(90% 45% at 15% 100%, rgba(140, 40, 200, 0.24), transparent),
+    radial-gradient(80% 45% at 95% 85%, rgba(220, 50, 100, 0.2), transparent),
+    linear-gradient(180deg, #1a1222, #0c0810);
+}
+
+.bb-card-cursed .bb-card-face::after {
+  content: '';
+  position: absolute;
+  inset: -20%;
+  pointer-events: none;
+  background: radial-gradient(35% 25% at 30% 70%, rgba(200, 60, 140, 0.16), transparent),
+    radial-gradient(30% 25% at 70% 40%, rgba(120, 60, 220, 0.14), transparent);
+  animation: bb-smoke-drift 6s ease-in-out infinite alternate;
+}
+
+@keyframes bb-smoke {
+  from {
+    opacity: 0.32;
+    scale: 1;
+  }
+  to {
+    opacity: 0.72;
+    scale: 1.07;
+  }
+}
+
+@keyframes bb-smoke-drift {
+  from {
+    transform: translate(-6%, 4%) rotate(0deg);
+  }
+  to {
+    transform: translate(6%, -4%) rotate(8deg);
+  }
+}
+
+.bb-card-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Pick feedback. The real card only brightens (it is gone next frame); the show
+   is on a detached clone that punches, wobbles, flashes and flies off. */
+.bb-card-picked .bb-card-frame {
+  filter: brightness(1.5);
+}
+
+.bb-card.bb-card-ghost {
+  position: fixed;
+  z-index: 60;
+  flex: none;
+  min-height: 0;
+  pointer-events: none;
+  animation: bb-card-pick 0.6s var(--bb-out) forwards;
+}
+
+.bb-card-ghost .bb-card-frame {
+  transform: translateY(-0.75rem) scale(1.06) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transition: none;
+}
+
+.bb-card-ghost .bb-card-shine {
+  opacity: 1;
+  background: #ffffff;
+  mix-blend-mode: normal;
+  animation: bb-card-flash 0.28s ease-out forwards;
+}
+
+.bb-card-ghost::before {
+  opacity: 0.9;
+}
+
+@keyframes bb-card-pick {
+  0% {
+    scale: 1;
+    rotate: 0deg;
+  }
+  22% {
+    scale: 1.15;
+    rotate: -6deg;
+  }
+  42% {
+    scale: 1.1;
+    rotate: 5deg;
+    translate: 0 0;
+    opacity: 1;
+  }
+  100% {
+    scale: 0.5;
+    rotate: 0deg;
+    translate: 0 -45vh;
+    opacity: 0;
+  }
+}
+
+@keyframes bb-card-flash {
+  from {
+    opacity: 0.5;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* On narrower windows the hand shrinks rather than wrapping, so a four-card offer
+   still reads as one row of choices. */
+@media (max-width: 64rem) {
+  .bb-cards {
+    gap: 1rem;
+  }
+
+  .bb-card {
+    flex-basis: 11.75rem;
+    width: 11.75rem;
+    min-height: 18.5rem;
+  }
+
+  .bb-card-emblem {
+    height: 6.2rem;
+  }
+
+  .bb-card-glyph {
+    width: 3.7rem;
+    height: 3.7rem;
+  }
+}
+
+/* ------------------------------------------------------------ reward screen -- */
+
+.bb-panel-reward {
+  width: min(72rem, 100%);
+}
+
+.bb-panel-reward .bb-panel-head {
+  text-align: center;
+  margin-bottom: 0.25rem;
+}
+
+.bb-panel-reward .bb-panel-head h2 {
+  font-size: 2.3rem;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 1.8rem color-mix(in srgb, var(--bb-accent) 55%, transparent), 0 3px 0 rgba(0, 0, 0, 0.6);
+}
+
+.bb-panel-reward .bb-sub {
+  display: inline-block;
+  margin-top: 0.5rem;
+  padding: 0.2rem 0.8rem;
+  font-family: var(--bb-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--bb-accent-hot);
+  background: rgba(106, 168, 240, 0.1);
+  border: 1px solid rgba(106, 168, 240, 0.3);
+}
+
+.bb-panel-reward > .bb-row {
+  justify-content: center;
+}
+
+.bb-panel-reward .bb-strip {
+  justify-content: center;
+  border-top: 0;
+}
+
 /* -------------------------------------------------------------------- chips -- */
 
 .bb-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.35rem;
+  gap: 0.4rem;
+}
+
+.bb-chips + .bb-chips,
+.bb-chips + .bb-note {
+  margin-top: 0.5rem;
 }
 
 .bb-chip {
+  --rarity: #9fb3cc;
+  --fam: var(--rarity);
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
-  padding: 0.25rem 0.55rem;
+  gap: 0.4rem;
+  padding: 0.24rem 0.65rem 0.24rem 0.5rem;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--rarity) 10%, rgba(255, 255, 255, 0.03));
+  border: 1px solid color-mix(in srgb, var(--rarity) 42%, transparent);
   font-size: 0.76rem;
+  font-weight: 600;
+  cursor: help;
 }
 
-.bb-chip-legendary {
-  border-color: var(--bb-rare);
-  color: var(--bb-rare);
+.bb-chip-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--fam);
+  box-shadow: 0 0 0.45rem var(--fam);
 }
 
 .bb-chip-rare {
-  border-color: var(--bb-accent);
+  box-shadow: 0 0 0.7rem color-mix(in srgb, var(--rarity) 30%, transparent);
+}
+
+.bb-chip-legendary {
+  color: var(--bb-rare);
+  background: linear-gradient(100deg, rgba(240, 177, 74, 0.22), rgba(255, 240, 200, 0.08) 50%, rgba(240, 177, 74, 0.18));
+  box-shadow: 0 0 0.8rem rgba(240, 177, 74, 0.35);
 }
 
 .bb-chip-cursed {
-  border-color: var(--bb-bad);
-  color: var(--bb-bad);
+  color: #ff8fb0;
+  background: linear-gradient(100deg, rgba(212, 85, 122, 0.2), rgba(120, 60, 200, 0.16));
 }
 
 .bb-chip-synergy {
   border-color: var(--bb-rare);
-  background: rgba(240, 177, 74, 0.12);
+  background: rgba(240, 177, 74, 0.14);
   color: var(--bb-rare);
-  font-weight: 600;
+  font-family: var(--bb-display);
+  font-weight: 400;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  box-shadow: 0 0 0.8rem rgba(240, 177, 74, 0.25);
 }
 
 .bb-chip-stacks {
-  opacity: 0.6;
+  opacity: 0.65;
   font-size: 0.68rem;
 }
 
 /* ---------------------------------------------------------------- map/route -- */
 
+.bb-panel-map {
+  width: min(66rem, 100%);
+}
+
+/*
+ * The act board. Its aspect ratio matches the SVG viewBox exactly (1000 x 300),
+ * so percentage-positioned tokens and the SVG edges always agree, at any width
+ * and interface scale.
+ */
 .bb-map {
-  display: grid;
-  gap: 0.3rem;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1000 / 300;
   margin-bottom: 1.1rem;
-  padding: 0.75rem;
-  background: rgba(0, 0, 0, 0.28);
-  border-radius: 8px;
+  background: radial-gradient(ellipse 70% 90% at 50% 50%, rgba(40, 60, 100, 0.22), transparent 75%),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 2.5rem),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 2.5rem), rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  clip-path: var(--bb-cut);
 }
 
-.bb-map-layer {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
+.bb-map-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  animation: bb-fade 0.5s var(--bb-out) 0.1s both;
 }
 
-.bb-map-depth {
-  width: 1.4rem;
-  font-size: 0.68rem;
-  color: var(--bb-text-dim);
-  text-align: right;
+/* Future edges are a faint dotted suggestion; travelled ones are solid; the edges
+   out of the current room march toward the choices. */
+.bb-map-edge {
+  fill: none;
+  stroke: rgba(160, 180, 215, 0.28);
+  stroke-width: 2;
+  stroke-dasharray: 1 8;
+  stroke-linecap: round;
 }
 
+.bb-map-edge-visited {
+  stroke: rgba(235, 242, 255, 0.8);
+  stroke-width: 3.5;
+  stroke-dasharray: none;
+}
+
+.bb-map-edge-open {
+  stroke: var(--bb-accent-hot);
+  stroke-width: 3;
+  stroke-dasharray: 9 9;
+  filter: drop-shadow(0 0 4px rgba(106, 168, 240, 0.9));
+  animation: bb-march 0.8s linear infinite;
+}
+
+@keyframes bb-march {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+/* Tokens: round, with an archetype glyph. `translate` centres the token on its
+   point, which leaves `scale` free for hover and the pop-in. */
 .bb-node {
-  flex: 1;
-  padding: 0.28rem 0.4rem;
-  font-size: 0.7rem;
-  text-align: center;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: var(--bb-text-dim);
+  --node: #c8d4e8;
+  --size: 2.7rem;
+  position: absolute;
+  left: calc(var(--x) * 1%);
+  top: calc(var(--y) * 1%);
+  width: var(--size);
+  height: var(--size);
+  translate: -50% -50%;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--node) 28%, #1a2233), #0a0e17 75%);
+  border: 2px solid color-mix(in srgb, var(--node) 55%, transparent);
+  color: var(--node);
+  font: inherit;
+  box-shadow: 0 0.3rem 0.8rem rgba(0, 0, 0, 0.55);
+  transition: scale 0.3s var(--bb-spring), box-shadow 0.2s, border-color 0.2s;
+  animation: bb-node-in 0.45s var(--bb-spring) backwards;
+  animation-delay: calc(var(--i, 0) * 45ms + 80ms);
+}
+
+.bb-node-icon,
+.bb-node-icon svg {
+  display: block;
+  width: 1.35rem;
+  height: 1.35rem;
+}
+
+@keyframes bb-node-in {
+  from {
+    opacity: 0;
+    scale: 0.3;
+  }
 }
 
 .bb-node-visited {
-  opacity: 0.35;
+  opacity: 0.5;
+  background: color-mix(in srgb, var(--node) 22%, #0a0e17);
+  border-color: rgba(235, 242, 255, 0.45);
 }
 
+.bb-node-hidden {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+/* You are here: a white ring and a slow halo. */
 .bb-node-current {
+  opacity: 1;
   border-color: #ffffff;
   color: #ffffff;
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.14), 0 0 1.2rem rgba(255, 255, 255, 0.45);
+}
+
+.bb-node-current::after,
+.bb-node-open::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  pointer-events: none;
+  animation: bb-ring 1.8s var(--bb-out) infinite;
 }
 
 /* Selectable nodes pulse. On a graph of twenty nodes, "where can I go" has to be
    answerable without reading anything. */
 .bb-node-open {
-  border-color: var(--bb-accent);
-  color: var(--bb-text);
-  background: rgba(106, 168, 240, 0.18);
-  animation: bb-pulse-glow 1.8s ease-in-out infinite;
+  --size: 3.1rem;
+  cursor: pointer;
+  border-color: var(--node);
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--node) 45%, #1a2233), #0c1220 80%);
+  box-shadow: 0 0 1.1rem color-mix(in srgb, var(--node) 55%, transparent), 0 0.3rem 0.8rem rgba(0, 0, 0, 0.55);
 }
 
-.bb-node-current {
-  background: rgba(255, 255, 255, 0.14);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+.bb-node-open .bb-node-icon,
+.bb-node-open .bb-node-icon svg {
+  width: 1.55rem;
+  height: 1.55rem;
 }
 
+.bb-node-open:hover,
+.bb-node-open:focus-visible,
+.bb-node-hot {
+  scale: 1.18;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.85), 0 0 1.6rem color-mix(in srgb, var(--node) 80%, transparent);
+  z-index: 2;
+}
+
+@keyframes bb-ring {
+  0% {
+    opacity: 0.8;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 1.7;
+  }
+}
+
+/* The boss is larger, red, crowned, and glowing from the far end of the board:
+   the whole act points at it. */
 .bb-node-boss {
-  border-color: var(--bb-bad);
-  color: var(--bb-bad);
-  font-weight: 800;
-  letter-spacing: 0.08em;
+  --size: 4.1rem;
+  --node: #ff4d6a;
+  border-width: 3px;
+  box-shadow: 0 0 1.6rem rgba(255, 77, 106, 0.5), inset 0 0 1rem rgba(255, 77, 106, 0.35);
+}
+
+.bb-node-boss .bb-node-icon,
+.bb-node-boss .bb-node-icon svg {
+  width: 2rem;
+  height: 2rem;
 }
 
 .bb-routes {
   display: grid;
-  gap: 0.5rem;
+  gap: 0.55rem;
 }
 
+.bb-routes-row {
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem;
+}
+
+/* Route options are tiles with the archetype's colour down the left edge. They
+   echo the tokens on the board, and hovering one lights its token. */
 .bb-route {
+  --node: var(--bb-accent);
   display: flex;
   align-items: center;
-  gap: 0.8rem;
+  gap: 0.75rem;
   padding: 0.7rem 0.9rem;
   text-align: left;
-  background: rgba(255, 255, 255, 0.05);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--node) 12%, transparent), rgba(255, 255, 255, 0.03) 70%);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 7px;
+  border-left: 3px solid var(--node);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%);
   color: var(--bb-text);
   font: inherit;
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s, transform 0.08s;
+  transition: transform 0.25s var(--bb-spring), background 0.15s, border-color 0.15s;
+  animation: bb-rise 0.4s var(--bb-spring) backwards;
+  animation-delay: calc(var(--i, 0) * 60ms + 0.15s);
 }
 
-.bb-route:hover:not(:disabled) {
-  border-color: var(--bb-accent);
-  background: rgba(106, 168, 240, 0.12);
-  transform: translateX(5px);
-  box-shadow: -3px 0 0 var(--bb-accent), 0 0.5rem 1.5rem rgba(0, 0, 0, 0.35);
+.bb-route:nth-child(1) { --i: 0; }
+.bb-route:nth-child(2) { --i: 1; }
+.bb-route:nth-child(3) { --i: 2; }
+.bb-route:nth-child(4) { --i: 3; }
+
+.bb-route:hover:not(:disabled),
+.bb-route:focus-visible,
+.bb-route-hot {
+  border-color: color-mix(in srgb, var(--node) 70%, transparent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--node) 26%, transparent), rgba(255, 255, 255, 0.05) 80%);
+  transform: translateY(-3px);
 }
 
-.bb-route {
-  animation: bb-deal 0.2s ease-out backwards;
+.bb-route:focus-visible {
+  outline: 2px solid var(--bb-accent-hot);
+  outline-offset: -2px;
 }
-
-.bb-route:nth-child(1) { animation-delay: 0s; }
-.bb-route:nth-child(2) { animation-delay: 0.05s; }
-.bb-route:nth-child(3) { animation-delay: 0.1s; }
-.bb-route:nth-child(4) { animation-delay: 0.15s; }
 
 .bb-route-key {
   display: grid;
   place-items: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  flex: none;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom-width: 3px;
+  font-family: var(--bb-display);
+  font-size: 0.8rem;
+  color: var(--bb-text);
+}
+
+.bb-route-icon,
+.bb-route-icon svg {
+  display: block;
+  flex: none;
   width: 1.6rem;
   height: 1.6rem;
-  border-radius: 5px;
-  background: rgba(0, 0, 0, 0.45);
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--bb-text-dim);
-  flex: none;
+  color: var(--node);
+  filter: drop-shadow(0 0 0.35rem color-mix(in srgb, var(--node) 60%, transparent));
 }
 
 .bb-route-body {
   display: grid;
   gap: 0.15rem;
+  min-width: 0;
+}
+
+.bb-route-body strong {
+  font-family: var(--bb-display);
+  font-weight: 400;
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .bb-route-body small {
@@ -730,29 +1480,110 @@ kbd {
   color: var(--bb-warn);
 }
 
-/* ----------------------------------------------------------------- menu/meta -- */
+/* ------------------------------------------------------------- title screen -- */
 
-.bb-title h1 {
+/*
+ * The main menu is a title screen, not a window: a big animated logo over the live
+ * backdrop, two glass cards, and a footer strip. The glass is translucent and
+ * blurred so the bouncing scene behind reads through without fighting the text.
+ */
+.bb-panel-menu {
+  width: min(64rem, 100%);
+  animation: none;
+}
+
+/* Anchored to the top rather than centred, so the lower part of the screen - the
+   lit floor the ball classes bounce on - stays clear. */
+.overlay > .bb-panel-menu {
+  margin: 0 auto auto;
+}
+
+.bb-title {
+  text-align: center;
+  margin-bottom: 1.4rem;
+}
+
+.bb-logo {
+  display: inline-flex;
+  gap: 0.18em;
   margin: 0;
-  font-size: clamp(2rem, 5vw, 3.2rem);
-  letter-spacing: 0.16em;
-  font-weight: 800;
-  background: linear-gradient(100deg, #ffffff, var(--bb-accent));
+  font-family: var(--bb-display);
+  font-weight: 400;
+  font-size: clamp(3rem, 8vw, 5.6rem);
+  line-height: 1;
+  letter-spacing: 0.02em;
+  /* Glow and a hard drop shadow on the whole word; per-letter shadows would
+     paint over the gradient fill. */
+  filter: drop-shadow(0 0 1.1rem rgba(106, 168, 240, 0.5)) drop-shadow(0 0.3rem 0 rgba(0, 0, 0, 0.55));
+}
+
+.bb-logo-word {
+  display: inline-flex;
+}
+
+.bb-logo-letter {
+  display: inline-block;
+  transform-origin: 50% 100%;
+  background: linear-gradient(180deg, #ffffff 18%, #c6e6ff 48%, #6aa8f0 78%, #3f6fc4);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  /* Drop in with a squash on landing, then idle in a slow wave. The drop uses the
+     individual translate/scale properties and the wave uses transform, so the two
+     animations never overwrite each other. */
+  animation: bb-letter-drop 0.8s var(--bb-spring) backwards, bb-letter-bob 2.6s ease-in-out infinite;
+  animation-delay: calc(var(--i) * 60ms + 0.1s), calc(var(--i) * 110ms + 1.3s);
+}
+
+.bb-logo-b .bb-logo-letter {
+  background-image: linear-gradient(180deg, #ffffff 15%, #ffe6ad 45%, #f0b14a 75%, #b86a1c);
+}
+
+@keyframes bb-letter-drop {
+  0% {
+    opacity: 0;
+    translate: 0 -1.4em;
+    scale: 0.9 1.25;
+  }
+  55% {
+    opacity: 1;
+    translate: 0 0.06em;
+    scale: 1.18 0.8;
+  }
+  75% {
+    translate: 0 -0.08em;
+    scale: 0.95 1.06;
+  }
+  100% {
+    translate: 0 0;
+    scale: 1 1;
+  }
+}
+
+@keyframes bb-letter-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-0.07em);
+  }
 }
 
 .bb-title p {
-  margin: 0.2rem 0 1.4rem;
+  margin: 0.8rem 0 0;
+  font-size: 0.82rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
   color: var(--bb-text-dim);
-  letter-spacing: 0.04em;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+  animation: bb-fade 0.8s var(--bb-out) 0.9s both;
 }
 
 .bb-menu-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 1rem;
 }
 
 @media (max-width: 62rem) {
@@ -761,91 +1592,266 @@ kbd {
   }
 }
 
+.bb-menu-card {
+  position: relative;
+  margin: 0;
+  padding: 1rem 1.2rem 1.15rem;
+  background: var(--bb-glass);
+  border: 1px solid var(--bb-panel-edge);
+  clip-path: var(--bb-cut);
+  backdrop-filter: blur(10px) saturate(1.15);
+  animation: bb-panel-open 0.4s var(--bb-out) both;
+}
+
+.bb-menu-ball {
+  animation-delay: 0.45s;
+}
+
+.bb-menu-run {
+  animation-delay: 0.55s;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.bb-menu-run h3 {
+  margin-bottom: 0;
+}
+
+/* Ball select: the balls themselves, as lit orbs. */
 .bb-balls {
-  display: grid;
-  gap: 0.5rem;
-  max-height: 26rem;
-  overflow-y: auto;
-  padding-right: 0.3rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.35rem 0.5rem;
+  min-height: 4.8rem;
 }
 
 .bb-ball {
   --ball: #ffffff;
   --ball-accent: #ffffff;
   display: flex;
-  gap: 0.8rem;
-  padding: 0.7rem 0.85rem;
-  text-align: left;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 7px;
-  color: var(--bb-text);
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  width: 3.5rem;
+  padding: 0.3rem 0 0.2rem;
+  background: none;
+  border: 0;
+  color: var(--bb-text-dim);
   font: inherit;
   cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
 }
 
-.bb-ball:hover,
-.bb-ball-selected {
-  border-color: var(--ball-accent);
-  background: color-mix(in srgb, var(--ball) 9%, transparent);
-}
-
-.bb-ball-dot {
-  flex: none;
-  width: 1.1rem;
-  height: 1.1rem;
-  margin-top: 0.15rem;
+.bb-ball-orb {
+  display: block;
+  width: 2.3rem;
+  height: 2.3rem;
   border-radius: 50%;
-  background: var(--ball);
-  box-shadow: 0 0 0.75rem color-mix(in srgb, var(--ball-accent) 60%, transparent);
+  background: radial-gradient(circle at 34% 30%, #ffffff 0 7%, var(--ball-accent) 16%, var(--ball) 44%, color-mix(in srgb, var(--ball) 35%, #05070c) 100%);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 0 0.9rem color-mix(in srgb, var(--ball-accent) 40%, transparent),
+    inset -3px -5px 9px rgba(0, 0, 0, 0.35);
+  transition: width 0.3s var(--bb-spring), height 0.3s var(--bb-spring), transform 0.3s var(--bb-spring), box-shadow 0.2s;
 }
 
-.bb-ball strong {
-  display: block;
-  font-size: 1rem;
+.bb-ball-name {
+  font-family: var(--bb-display);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.bb-ball em {
-  display: block;
-  font-size: 0.8rem;
-  color: var(--ball-accent);
-  margin-bottom: 0.2rem;
+.bb-ball:hover .bb-ball-orb,
+.bb-ball:focus-visible .bb-ball-orb {
+  transform: translateY(-4px) scale(1.1);
 }
 
-.bb-ball p {
-  margin: 0 0 0.25rem;
-  font-size: 0.82rem;
-  line-height: 1.45;
+.bb-ball:focus-visible {
+  outline: none;
+}
+
+.bb-ball:focus-visible .bb-ball-name {
+  color: var(--bb-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* The selected ball is larger, ringed, and bounces - it is the one you are about
+   to throw. */
+.bb-ball-selected {
   color: var(--bb-text);
 }
 
-.bb-ball small {
+.bb-ball-selected .bb-ball-orb {
+  width: 3.1rem;
+  height: 3.1rem;
+  box-shadow: 0 0 0 2px var(--ball-accent), 0 0 0 5px rgba(0, 0, 0, 0.45),
+    0 0 1.6rem color-mix(in srgb, var(--ball-accent) 70%, transparent), inset -4px -6px 10px rgba(0, 0, 0, 0.3);
+  animation: bb-orb-bounce 1.5s infinite;
+}
+
+.bb-ball-selected .bb-ball-name {
+  color: var(--ball-accent);
+}
+
+@keyframes bb-orb-bounce {
+  0%,
+  100% {
+    translate: 0 0;
+    scale: 1.1 0.9;
+    animation-timing-function: cubic-bezier(0.2, 0.7, 0.4, 1);
+  }
+  12% {
+    scale: 1 1;
+  }
+  50% {
+    translate: 0 -0.6rem;
+    scale: 0.97 1.04;
+    animation-timing-function: cubic-bezier(0.6, 0, 0.8, 0.3);
+  }
+  90% {
+    scale: 1 1;
+  }
+}
+
+.bb-silhouette {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  margin: 0 0.35rem 1.35rem;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.25);
+  color: var(--bb-text-dim);
+  font-family: var(--bb-display);
+  cursor: help;
+}
+
+.bb-locked-count {
+  margin: 0.2rem 0 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bb-text-dim);
+}
+
+.bb-ball-detail {
+  --ball: #ffffff;
+  --ball-accent: #ffffff;
+  margin-top: 0.8rem;
+  padding: 0.75rem 0.95rem;
+  border-left: 3px solid var(--ball-accent);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ball) 14%, transparent), transparent 85%);
+  animation: bb-rise 0.35s var(--bb-out) both;
+}
+
+.bb-ball-detail strong {
+  display: block;
+  font-family: var(--bb-display);
+  font-weight: 400;
+  font-size: 1.35rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.bb-ball-detail em {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-style: normal;
+  font-size: 0.86rem;
+  color: var(--ball-accent);
+}
+
+.bb-ball-detail p {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.bb-ball-detail small {
   display: block;
   font-size: 0.76rem;
   line-height: 1.4;
 }
 
-.bb-locked {
-  margin-top: 0.75rem;
-  padding: 0.7rem 0.85rem;
-  border: 1px dashed rgba(255, 255, 255, 0.14);
-  border-radius: 7px;
+.bb-seed {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.bb-locked h4 {
-  margin: 0 0 0.35rem;
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--bb-text-dim);
+.bb-seed .bb-field {
+  flex: 1;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 0;
 }
 
-.bb-locked p {
-  margin: 0.15rem 0;
-  font-size: 0.78rem;
-  color: var(--bb-text-dim);
+.bb-seed .bb-field input {
+  width: 100%;
 }
+
+.bb-btn.bb-cta {
+  margin-top: auto;
+  font-size: 1.2rem;
+  letter-spacing: 0.12em;
+  padding: 1.05rem 1rem;
+}
+
+.bb-history {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.bb-history .bb-note {
+  margin: 0;
+  font-size: 0.74rem;
+}
+
+.bb-history-won strong {
+  color: var(--bb-rare);
+}
+
+.bb-menu-run .bb-gains-compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.bb-menu-run .bb-gain {
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.bb-menu-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.bb-menu-nav .bb-btn {
+  --btn-fill: rgba(12, 17, 29, 0.75);
+  font-size: 0.74rem;
+}
+
+.bb-resume {
+  width: min(30rem, 100%);
+  margin: 0 auto 1.1rem;
+  text-align: center;
+  animation: bb-panel-open 0.4s var(--bb-out) 0.35s both;
+}
+
+.bb-resume .bb-btn.bb-primary {
+  --btn-edge: #d4ffe8;
+  --btn-fill: linear-gradient(180deg, #9cf5c8, var(--bb-good) 55%, #2fae70);
+  filter: drop-shadow(0 0 0.9rem rgba(92, 232, 160, 0.5));
+  animation: none;
+}
+
+.bb-resume .bb-note {
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.9);
+}
+
+/* ------------------------------------------------------------ fields/forms -- */
 
 .bb-field {
   display: grid;
@@ -876,14 +1882,14 @@ kbd {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 0.85rem;
+  height: 1rem;
   background: transparent;
   cursor: pointer;
 }
 
 .bb-field input[type='range']::-webkit-slider-runnable-track {
   height: 0.3rem;
-  background: rgba(255, 255, 255, 0.12);
+  background: linear-gradient(90deg, rgba(106, 168, 240, 0.35), rgba(255, 255, 255, 0.1));
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -896,16 +1902,22 @@ kbd {
 .bb-field input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 0.55rem;
-  height: 0.85rem;
-  margin-top: -0.3rem;
+  width: 0.6rem;
+  height: 1rem;
+  margin-top: -0.4rem;
   background: var(--bb-accent);
   border: none;
+  box-shadow: 0 0 0.6rem rgba(106, 168, 240, 0.7);
+  transition: transform 0.2s var(--bb-spring);
+}
+
+.bb-field input[type='range']:hover::-webkit-slider-thumb {
+  transform: scale(1.25);
 }
 
 .bb-field input[type='range']::-moz-range-thumb {
-  width: 0.55rem;
-  height: 0.85rem;
+  width: 0.6rem;
+  height: 1rem;
   border-radius: 0;
   background: var(--bb-accent);
   border: none;
@@ -913,7 +1925,7 @@ kbd {
 
 .bb-field input[type='text'],
 .bb-field select {
-  padding: 0.4rem 0.5rem;
+  padding: 0.45rem 0.55rem;
   background: rgba(0, 0, 0, 0.45);
   border: 1px solid rgba(255, 255, 255, 0.16);
   color: var(--bb-text);
@@ -921,6 +1933,13 @@ kbd {
   font-family: var(--bb-mono);
   font-size: 0.82rem;
   letter-spacing: 0.06em;
+}
+
+.bb-field input[type='text']:focus,
+.bb-field select:focus {
+  outline: none;
+  border-color: var(--bb-accent);
+  box-shadow: 0 0 0 1px var(--bb-accent), 0 0 0.8rem rgba(106, 168, 240, 0.35);
 }
 
 /* Checkboxes become square indicator lamps. */
@@ -937,6 +1956,7 @@ kbd {
 
 .bb-field input[type='checkbox']:checked {
   border-color: var(--bb-accent);
+  box-shadow: 0 0 0.6rem rgba(106, 168, 240, 0.5);
 }
 
 .bb-field input[type='checkbox']:checked::after {
@@ -949,11 +1969,13 @@ kbd {
 .bb-readout {
   min-width: 3.4rem;
   text-align: right;
-  font-family: var(--bb-mono);
+  font-family: var(--bb-display);
   font-variant-numeric: tabular-nums;
   color: var(--bb-text);
   font-size: 0.78rem;
 }
+
+/* ---------------------------------------------------------- numbers/results -- */
 
 .bb-gains {
   display: grid;
@@ -962,51 +1984,51 @@ kbd {
 }
 
 .bb-gain {
-  padding: 0.6rem 0.7rem;
+  position: relative;
+  padding: 0.65rem 0.75rem;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-left: 2px solid var(--bb-accent);
+  border-top: 2px solid var(--bb-accent);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+  animation: bb-rise 0.4s var(--bb-spring) backwards;
 }
+
+.bb-gain:nth-child(1) { animation-delay: 0.05s; }
+.bb-gain:nth-child(2) { animation-delay: 0.1s; }
+.bb-gain:nth-child(3) { animation-delay: 0.15s; }
+.bb-gain:nth-child(4) { animation-delay: 0.2s; }
+.bb-gain:nth-child(5) { animation-delay: 0.25s; }
+.bb-gain:nth-child(6) { animation-delay: 0.3s; }
 
 /* Oversized tabular numerals: the results screen should be dominated by numbers,
-   not by sentences. */
+   not by sentences. The dark under-shadow keeps them legible over a busy scene. */
 .bb-gain-value {
   display: block;
-  font-family: var(--bb-mono);
-  font-size: 1.7rem;
-  font-weight: 700;
+  font-family: var(--bb-display);
+  font-size: 1.9rem;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
   line-height: 1.05;
-  text-shadow: 0 0 1.2rem color-mix(in srgb, var(--bb-accent) 45%, transparent);
-  animation: bb-count-in 0.3s ease-out backwards;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.6), 0 0 1.2rem color-mix(in srgb, var(--bb-accent) 50%, transparent);
 }
 
-/* Results numbers land in sequence, so the eye is walked through the payout
-   instead of being handed a table. */
-.bb-gain:nth-child(1) .bb-gain-value { animation-delay: 0.02s; }
-.bb-gain:nth-child(2) .bb-gain-value { animation-delay: 0.07s; }
-.bb-gain:nth-child(3) .bb-gain-value { animation-delay: 0.12s; }
-.bb-gain:nth-child(4) .bb-gain-value { animation-delay: 0.17s; }
-.bb-gain:nth-child(5) .bb-gain-value { animation-delay: 0.22s; }
-.bb-gain:nth-child(6) .bb-gain-value { animation-delay: 0.27s; }
-
-.bb-resume {
-  margin-bottom: 1.25rem;
-  padding: 0.9rem 1rem;
-  border: 1px solid color-mix(in srgb, var(--bb-good) 45%, transparent);
-  border-left: 3px solid var(--bb-good);
-  background: color-mix(in srgb, var(--bb-good) 7%, transparent);
+/* A small pop when a count-up lands on its final value. */
+.bb-counted {
+  animation: bb-pop 0.35s var(--bb-spring);
 }
 
-.bb-resume .bb-btn.bb-primary {
-  background: var(--bb-good);
-  border-color: var(--bb-good);
+@keyframes bb-pop {
+  40% {
+    transform: scale(1.18);
+    color: #ffffff;
+  }
 }
 
 .bb-gain-label {
   display: block;
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
+  margin-top: 0.2rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--bb-text-dim);
 }
@@ -1017,6 +2039,65 @@ kbd {
   font-size: 0.7rem;
   color: var(--bb-text-dim);
 }
+
+.bb-gains-compact .bb-gain {
+  padding: 0.5rem 0.7rem;
+}
+
+.bb-gains-compact .bb-gain-value {
+  font-size: 1.3rem;
+}
+
+.bb-gains-compact .bb-gain-label {
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* Results take the colour of the outcome: gold for a win, red for a death. The
+   title slams in - oversized, then hard to size with a shake - so the moment
+   lands before the numbers start counting. */
+.bb-results-victory {
+  --bb-accent: #f0b14a;
+}
+
+.bb-results-defeat {
+  --bb-accent: #ff6b85;
+}
+
+.bb-results-title {
+  display: inline-block;
+  font-size: 2.6rem !important;
+  color: color-mix(in srgb, var(--bb-accent) 70%, #ffffff);
+  text-shadow: 0 0 1.8rem color-mix(in srgb, var(--bb-accent) 65%, transparent), 0 3px 0 rgba(0, 0, 0, 0.6) !important;
+  transform-origin: 30% 60%;
+  animation: bb-slam 0.62s var(--bb-out) 0.12s both;
+}
+
+@keyframes bb-slam {
+  0% {
+    opacity: 0;
+    transform: scale(1.6);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(0.97);
+  }
+  58% {
+    transform: scale(1.02) translateX(-5px) rotate(-1deg);
+  }
+  70% {
+    transform: translateX(4px) rotate(0.6deg);
+  }
+  82% {
+    transform: translateX(-2px);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------ unlocks/meta -- */
 
 .bb-settings {
   display: grid;
@@ -1030,50 +2111,109 @@ kbd {
   gap: 1rem;
 }
 
+.bb-branch h3,
+.bb-journal-col h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .bb-branch h3 {
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.6rem;
+  font-family: var(--bb-display);
+  font-weight: 400;
   font-size: 0.78rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--bb-text-dim);
 }
 
+/* Unlock nodes are tiles. A purchasable one glows green and lifts on hover - it
+   is the only state the player can act on, so it is the only one that moves. */
 .bb-unlock {
+  position: relative;
   display: block;
   width: 100%;
-  margin-bottom: 0.45rem;
-  padding: 0.6rem 0.7rem;
+  margin-bottom: 0.5rem;
+  padding: 0.65rem 0.75rem;
   text-align: left;
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 6px;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
   color: var(--bb-text);
   font: inherit;
   cursor: pointer;
+  transition: transform 0.25s var(--bb-spring), background 0.15s, border-color 0.15s;
 }
 
 .bb-unlock header {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
   gap: 0.5rem;
   font-size: 0.88rem;
 }
 
+.bb-unlock header strong {
+  font-family: var(--bb-display);
+  font-weight: 400;
+  letter-spacing: 0.03em;
+}
+
+.bb-unlock header span {
+  font-family: var(--bb-display);
+  font-size: 0.78rem;
+  color: var(--bb-warn);
+}
+
 .bb-unlock p {
-  margin: 0.25rem 0 0.2rem;
+  margin: 0.3rem 0 0.2rem;
   font-size: 0.78rem;
   line-height: 1.4;
   color: var(--bb-text-dim);
 }
 
+.bb-unlock small {
+  font-size: 0.74rem;
+}
+
 .bb-unlock-ready {
-  border-color: var(--bb-good);
+  border-color: color-mix(in srgb, var(--bb-good) 70%, transparent);
+  background: linear-gradient(135deg, rgba(92, 232, 160, 0.14), rgba(92, 232, 160, 0.03) 60%);
+  box-shadow: inset 0 0 1.2rem rgba(92, 232, 160, 0.14), inset 3px 0 0 var(--bb-good);
+  animation: bb-ready 2.4s ease-in-out infinite;
+}
+
+.bb-unlock-ready:hover,
+.bb-unlock-ready:focus-visible {
+  transform: translateY(-3px);
+  background: linear-gradient(135deg, rgba(92, 232, 160, 0.24), rgba(92, 232, 160, 0.06) 60%);
+}
+
+.bb-unlock:focus-visible {
+  outline: 2px solid var(--bb-accent-hot);
+  outline-offset: -2px;
+}
+
+@keyframes bb-ready {
+  0%,
+  100% {
+    box-shadow: inset 0 0 1rem rgba(92, 232, 160, 0.1), inset 3px 0 0 var(--bb-good);
+  }
+  50% {
+    box-shadow: inset 0 0 1.8rem rgba(92, 232, 160, 0.26), inset 3px 0 0 var(--bb-good);
+  }
 }
 
 .bb-unlock-owned {
   border-color: rgba(92, 232, 160, 0.3);
-  opacity: 0.6;
+  box-shadow: inset 3px 0 0 rgba(92, 232, 160, 0.6);
+  opacity: 0.65;
   cursor: default;
+}
+
+.bb-unlock-owned header span {
+  color: var(--bb-good);
 }
 
 .bb-unlock-locked {
@@ -1087,16 +2227,21 @@ kbd {
   gap: 1rem;
   max-height: 60vh;
   overflow-y: auto;
+  padding-right: 0.3rem;
 }
 
 .bb-journal-col h3 {
   position: sticky;
   top: 0;
-  margin: 0 0 0.4rem;
-  padding: 0.3rem 0;
+  z-index: 1;
+  margin: 0 0 0.45rem;
+  padding: 0.35rem 0;
   background: var(--bb-panel);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--bb-display);
+  font-weight: 400;
   font-size: 0.76rem;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--bb-text-dim);
 }
@@ -1105,11 +2250,17 @@ kbd {
    the journal reads as a collection rather than a reference manual. */
 .bb-entry {
   --rarity: var(--bb-text-dim);
-  padding: 0.3rem 0.5rem;
+  padding: 0.3rem 0.55rem;
   margin-bottom: 0.2rem;
   border-left: 2px solid var(--rarity);
-  background: rgba(255, 255, 255, 0.03);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rarity) 9%, transparent), rgba(255, 255, 255, 0.02) 70%);
   cursor: help;
+  transition: background 0.15s, transform 0.2s var(--bb-spring);
+}
+
+.bb-entry:hover {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--rarity) 22%, transparent), rgba(255, 255, 255, 0.04) 80%);
+  transform: translateX(3px);
 }
 
 .bb-entry strong {
@@ -1134,20 +2285,12 @@ kbd {
   gap: 0.3rem;
 }
 
-.bb-silhouette {
-  display: grid;
-  place-items: center;
-  width: 1.6rem;
-  height: 1.6rem;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px dashed rgba(255, 255, 255, 0.22);
-  color: var(--bb-text-dim);
-  font-weight: 800;
-  cursor: help;
-}
-
 .bb-entry-hidden {
   opacity: 0.4;
+}
+
+.bb-entry-hidden strong {
+  letter-spacing: 0.2em;
 }
 
 .bb-entry-done {
@@ -1173,11 +2316,16 @@ kbd {
   display: grid;
   grid-template-columns: minmax(7rem, 1fr) auto;
   gap: 0.3rem 0.6rem;
-  padding: 0.28rem 0;
+  padding: 0.3rem 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+.bb-stat-name {
+  color: var(--bb-text);
+}
+
 .bb-stat-value {
+  font-family: var(--bb-display);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -1192,13 +2340,15 @@ kbd {
   margin-top: 0.75rem;
   padding: 0.55rem 0.7rem;
   border: 1px dashed rgba(240, 177, 74, 0.35);
-  border-radius: 6px;
+  background: rgba(240, 177, 74, 0.04);
 }
 
 .bb-nearmiss h4 {
   margin: 0 0 0.3rem;
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
+  font-family: var(--bb-display);
+  font-weight: 400;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--bb-rare);
 }
@@ -1221,6 +2371,15 @@ kbd {
 .bb-bar-fill {
   height: 100%;
   border-radius: 999px;
+  box-shadow: 0 0 0.6rem currentColor;
+  transform-origin: 0 50%;
+  animation: bb-bar-grow 0.7s var(--bb-out) 0.3s backwards;
+}
+
+@keyframes bb-bar-grow {
+  from {
+    transform: scaleX(0);
+  }
 }
 
 .bb-bar-label {
@@ -1243,9 +2402,16 @@ kbd {
 .bb-unlock-row {
   display: grid;
   gap: 0.1rem;
-  padding: 0.4rem 0;
+  padding: 0.4rem 0 0.4rem 0.6rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 2px solid var(--bb-rare);
   font-size: 0.85rem;
+}
+
+.bb-unlock-row strong {
+  font-family: var(--bb-display);
+  font-weight: 400;
+  letter-spacing: 0.03em;
 }
 
 .bb-unlock-row span {
@@ -1262,22 +2428,53 @@ kbd {
 .bb-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 1.2rem;
   margin-top: 1rem;
   padding-top: 0.75rem;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   font-size: 0.78rem;
+  letter-spacing: 0.04em;
   color: var(--bb-text-dim);
+}
+
+.bb-strip span:first-child {
+  color: var(--bb-warn);
 }
 
 .bb-event-result p {
   margin: 0.3rem 0;
   font-size: 0.92rem;
   line-height: 1.5;
+  animation: bb-rise 0.35s var(--bb-out) backwards;
 }
 
-.bb-gains-compact .bb-gain-value {
-  font-size: 1.15rem;
+.bb-event-result p:nth-child(2) { animation-delay: 0.08s; }
+.bb-event-result p:nth-child(3) { animation-delay: 0.16s; }
+
+/* Pause and event are narrow, centred panels: one question each. */
+.bb-panel-pause {
+  width: min(24rem, 100%);
+  text-align: center;
+}
+
+.bb-panel-pause .bb-panel-head h2 {
+  font-size: 2.2rem;
+  letter-spacing: 0.14em;
+}
+
+.bb-panel-pause .bb-btn {
+  width: 100%;
+}
+
+.bb-panel-pause .bb-stack > .bb-btn:first-child {
+  --btn-edge: var(--bb-accent);
+  --btn-fill: rgba(40, 62, 100, 0.95);
+  padding: 0.85rem 1rem;
+  font-size: 0.95rem;
+}
+
+.bb-panel-event {
+  width: min(40rem, 100%);
 }
 
 /* ------------------------------------------------------------------- toasts -- */
@@ -1287,45 +2484,51 @@ kbd {
   top: 1rem;
   right: 1rem;
   display: grid;
-  gap: 0.4rem;
+  justify-items: end;
+  gap: 0.45rem;
   pointer-events: none;
   z-index: 10;
 }
 
 .bb-toast {
-  padding: 0.55rem 0.85rem;
-  background: rgba(12, 16, 26, 0.94);
-  border: 1px solid var(--bb-panel-edge);
-  border-left: 3px solid var(--bb-accent);
-  border-radius: 6px;
+  --tone: var(--bb-accent);
+  padding: 0.6rem 0.95rem;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--tone) 20%, rgba(12, 16, 26, 0.95)), rgba(12, 16, 26, 0.95) 65%);
+  border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent);
+  border-left: 3px solid var(--tone);
   font-size: 0.84rem;
   font-weight: 600;
-  animation: bb-slide 0.2s ease-out;
-  transition: opacity 0.5s, transform 0.5s;
+  letter-spacing: 0.02em;
+  box-shadow: 0 0 1.2rem color-mix(in srgb, var(--tone) 35%, transparent), 0 0.5rem 1.4rem rgba(0, 0, 0, 0.5);
+  animation: bb-toast-in 0.5s var(--bb-spring) both;
+  transition: opacity 0.5s, transform 0.5s var(--bb-out);
 }
 
 .bb-toast-rare {
-  border-left-color: var(--bb-rare);
+  --tone: var(--bb-rare);
   color: var(--bb-rare);
+  font-family: var(--bb-display);
+  font-weight: 400;
+  letter-spacing: 0.06em;
 }
 
 .bb-toast-good {
-  border-left-color: var(--bb-good);
+  --tone: var(--bb-good);
 }
 
 .bb-toast-bad {
-  border-left-color: var(--bb-bad);
+  --tone: var(--bb-bad);
 }
 
 .bb-toast-out {
   opacity: 0;
-  transform: translateX(1rem);
+  transform: translateX(1.5rem);
 }
 
-@keyframes bb-slide {
+@keyframes bb-toast-in {
   from {
     opacity: 0;
-    transform: translateX(1rem);
+    transform: translateX(110%) scale(0.9);
   }
 }
 
@@ -1333,66 +2536,112 @@ kbd {
  * Reduced motion.
  *
  * Driven both by the OS preference and by the in-game accessibility setting, which
- * puts `bb-reduced-motion` on the root element. Everything decorative stops; the
- * *static* styling that carries information - accent rules, brackets, borders,
- * glows - is deliberately kept, because removing it would cost readability rather
- * than just spectacle.
+ * puts `bb-reduced-motion` on the root element. Everything decorative stops: every
+ * animation and transition inside the overlay and the toasts, plus the hover lifts
+ * and tilts. This is a blanket rule rather than a list on purpose - a list goes
+ * stale the moment someone adds an animation, and this one cannot.
+ *
+ * The *static* styling that carries information - accent rules, borders, glows,
+ * the ring on the current map node - is deliberately kept, because removing it
+ * would cost readability rather than just spectacle. JavaScript-driven motion
+ * (tilt, count-up, the pick flourish) checks the same two sources itself.
  */
 @media (prefers-reduced-motion: reduce) {
-  .bb-panel,
-  .bb-toast,
-  .bb-card,
-  .bb-route,
-  .bb-gain-value,
-  .bb-card-legendary::before,
-  .bb-card-cursed::before,
-  .bb-node-open,
-  .bb-btn.bb-primary {
+  .overlay,
+  .overlay *,
+  .overlay *::before,
+  .overlay *::after,
+  .toasts *,
+  .bb-card-ghost {
     animation: none !important;
+    transition: none !important;
   }
 
-  .bb-card:hover,
-  .bb-route:hover {
+  .bb-btn:hover:not(:disabled),
+  .bb-btn:focus-visible,
+  .bb-btn:active:not(:disabled),
+  .bb-route:hover,
+  .bb-route-hot,
+  .bb-unlock-ready:hover,
+  .bb-entry:hover {
     transform: none;
   }
 
-  .bb-card:hover > header::after {
-    animation: none;
-    opacity: 0;
+  .bb-card .bb-card-frame,
+  .bb-card:hover .bb-card-frame,
+  .bb-card:focus-visible .bb-card-frame {
+    transform: none;
+  }
+
+  .bb-card:hover .bb-card-glyph,
+  .bb-ball:hover .bb-ball-orb,
+  .bb-node-open:hover,
+  .bb-node-hot {
+    transform: none;
+    scale: none;
+  }
+
+  .bb-card-ghost {
+    display: none;
   }
 }
 
-.bb-reduced-motion .bb-panel,
-.bb-reduced-motion .bb-toast,
-.bb-reduced-motion .bb-card,
-.bb-reduced-motion .bb-route,
-.bb-reduced-motion .bb-gain-value,
-.bb-reduced-motion .bb-card-legendary::before,
-.bb-reduced-motion .bb-card-cursed::before,
-.bb-reduced-motion .bb-node-open,
-.bb-reduced-motion .bb-btn.bb-primary {
+.bb-reduced-motion .overlay,
+.bb-reduced-motion .overlay *,
+.bb-reduced-motion .overlay *::before,
+.bb-reduced-motion .overlay *::after,
+.bb-reduced-motion .toasts *,
+.bb-reduced-motion .bb-card-ghost {
   animation: none !important;
+  transition: none !important;
 }
 
-.bb-reduced-motion .bb-card:hover,
-.bb-reduced-motion .bb-route:hover {
+.bb-reduced-motion .bb-btn:hover:not(:disabled),
+.bb-reduced-motion .bb-btn:focus-visible,
+.bb-reduced-motion .bb-btn:active:not(:disabled),
+.bb-reduced-motion .bb-route:hover,
+.bb-reduced-motion .bb-route-hot,
+.bb-reduced-motion .bb-unlock-ready:hover,
+.bb-reduced-motion .bb-entry:hover {
   transform: none;
 }
 
-.bb-reduced-motion .bb-card:hover > header::after {
-  animation: none;
-  opacity: 0;
+.bb-reduced-motion .bb-card .bb-card-frame,
+.bb-reduced-motion .bb-card:hover .bb-card-frame,
+.bb-reduced-motion .bb-card:focus-visible .bb-card-frame {
+  transform: none;
 }
 
-/* Flashing reduction removes the scanline texture and the pulsing glows, which are
-   the only repeating brightness changes in the interface. */
-.bb-reduced-flashing .bb-panel::after {
+.bb-reduced-motion .bb-card:hover .bb-card-glyph,
+.bb-reduced-motion .bb-ball:hover .bb-ball-orb,
+.bb-reduced-motion .bb-node-open:hover,
+.bb-reduced-motion .bb-node-hot {
+  transform: none;
+  scale: none;
+}
+
+.bb-reduced-motion .bb-card-ghost {
+  display: none;
+}
+
+/* Flashing reduction removes the scanline texture and every repeating brightness
+   change: pulsing glows, the moving sheen, the rotating foil, the expanding rings
+   and the pick flash. What is left is static and still fully informative. */
+.bb-reduced-flashing .bb-panel::after,
+.bb-reduced-flashing .bb-card-ghost .bb-card-shine,
+.bb-reduced-flashing .bb-node-current::after,
+.bb-reduced-flashing .bb-node-open::after {
   display: none;
 }
 
 .bb-reduced-flashing .bb-card-legendary::before,
 .bb-reduced-flashing .bb-card-cursed::before,
-.bb-reduced-flashing .bb-node-open,
-.bb-reduced-flashing .bb-btn.bb-primary {
+.bb-reduced-flashing .bb-card-legendary .bb-card-frame,
+.bb-reduced-flashing .bb-card-legendary .bb-card-face::after,
+.bb-reduced-flashing .bb-map-edge-open,
+.bb-reduced-flashing .bb-unlock-ready,
+.bb-reduced-flashing .bb-counted,
+.bb-reduced-flashing .bb-btn.bb-primary,
+.bb-reduced-flashing .bb-btn.bb-primary::after {
   animation: none !important;
 }

@@ -55,35 +55,28 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
   const maxBound = profile.maxBoundLevel();
   const history = profile.data.history.slice(-3).reverse();
   const resume = host.savedRun();
+  const chosen = unlockedBalls.find((b) => b.id === host.draft.ballId) ?? unlockedBalls[0];
 
   /**
-   * Ball selection is a row of names and one-line identities, with the full
-   * description, trade-off and starting upgrade shown only for the selected one.
-   * Printing all of that for nine classes at once was the single worst offender in
-   * making the menu read as a web page rather than a game.
+   * Ball selection is a row of orbs - the balls themselves, lit in their own
+   * colours - with the full description, trade-off and starting upgrade shown only
+   * for the selected one, in a detail block beside the row. Printing all of that
+   * for nine classes at once was the single worst offender in making the menu read
+   * as a web page rather than a game.
    */
-  const ballCards = unlockedBalls.map((ballClass) => {
-    const selected = host.draft.ballId === ballClass.id;
+  const ballOrbs = unlockedBalls.map((ballClass) => {
+    const selected = chosen?.id === ballClass.id;
     const node = el(
       'button',
       {
         class: `bb-ball${selected ? ' bb-ball-selected' : ''}`,
         type: 'button',
         style: `--ball:${ballClass.color};--ball-accent:${ballClass.accent}`,
-        title: `${ballClass.description}\n${ballClass.cost}`,
+        title: `${ballClass.name} - ${ballClass.tagline}\n${ballClass.description}\n${ballClass.cost}`,
+        ariaLabel: `${ballClass.name}. ${ballClass.tagline}`,
+        ariaPressed: selected ? 'true' : 'false',
       },
-      [
-        el('span', { class: 'bb-ball-dot' }),
-        el('div', {}, [
-          el('strong', { text: ballClass.name }),
-          el('em', { text: ballClass.tagline }),
-          selected ? el('p', { text: ballClass.description }) : null,
-          selected ? el('small', { class: 'bb-bad', text: ballClass.cost }) : null,
-          selected && ballClass.startingUpgrade
-            ? el('small', { class: 'bb-note', text: `Starts with ${getUpgradeName(ballClass.startingUpgrade)}` })
-            : null,
-        ]),
-      ],
+      [el('span', { class: 'bb-ball-orb', ariaHidden: 'true' }), el('span', { class: 'bb-ball-name', text: ballClass.name })],
     );
     node.addEventListener('click', () => {
       host.playClick();
@@ -94,15 +87,31 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
     return node;
   });
 
+  // Locked classes are dark, dashed orbs in the same row, with the requirement in
+  // the tooltip. The count creates the curiosity; a wall of unlock conditions does not.
+  const silhouettes = lockedBalls.map((ballClass) =>
+    el('span', { class: 'bb-silhouette', title: ballClass.unlockHint ?? 'Hidden', text: '?' }),
+  );
+
+  const detail = chosen
+    ? el('div', { class: 'bb-ball-detail', style: `--ball:${chosen.color};--ball-accent:${chosen.accent}` }, [
+        el('strong', { text: chosen.name }),
+        el('em', { text: chosen.tagline }),
+        el('p', { text: chosen.description }),
+        el('small', { class: 'bb-bad', text: chosen.cost }),
+        chosen.startingUpgrade ? el('small', { class: 'bb-note', text: `Starts with ${getUpgradeName(chosen.startingUpgrade)}` }) : null,
+      ])
+    : null;
+
   const seedInput = el('input', { type: 'text', value: host.draft.seed, placeholder: 'random', ariaLabel: 'Run seed', maxlength: 24 });
   seedInput.addEventListener('change', () => {
     host.draft.seed = seedInput.value.trim();
   });
 
   root.append(
-    el('div', { class: 'bb-panel bb-panel-menu' }, [
+    el('div', { class: 'bb-panel bb-panel-bare bb-panel-menu' }, [
       el('header', { class: 'bb-title' }, [
-        el('h1', { text: 'BOUNCEBOUND' }),
+        logo('BOUNCE', 'BOUND'),
         el('p', { text: 'The ball is the weapon. It never stops.' }),
       ]),
 
@@ -125,30 +134,21 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
         : null,
 
       el('div', { class: 'bb-menu-grid' }, [
-        el('div', {}, [
-          section('Ball', [
-            el('div', { class: 'bb-balls' }, ballCards),
-            lockedBalls.length > 0
-              ? el('div', { class: 'bb-locked' }, [
-                  el('h4', { text: `${lockedBalls.length} more to find` }),
-                  // Silhouettes only, with the requirement in the tooltip. The count
-                  // creates the curiosity; a wall of unlock conditions does not.
-                  el(
-                    'div',
-                    { class: 'bb-silhouettes' },
-                    lockedBalls.map((ballClass) =>
-                      el('span', { class: 'bb-silhouette', title: ballClass.unlockHint ?? 'Hidden', text: '?' }),
-                    ),
-                  ),
-                ])
-              : null,
-          ]),
-        ]),
+        section(
+          'Ball',
+          [
+            el('div', { class: 'bb-balls' }, [...ballOrbs, ...silhouettes]),
+            lockedBalls.length > 0 ? el('p', { class: 'bb-locked-count', text: `${lockedBalls.length} more to find` }) : null,
+            detail,
+          ],
+          'bb-menu-card bb-menu-ball',
+        ),
 
-        el('div', {}, [
-          section('Run', [
-            el('label', { class: 'bb-field' }, [el('span', { text: 'Seed' }), seedInput]),
-            row([
+        section(
+          'Run',
+          [
+            el('div', { class: 'bb-seed' }, [
+              el('label', { class: 'bb-field' }, [el('span', { text: 'Seed' }), seedInput]),
               button({
                 label: 'Random',
                 onClick: () => {
@@ -189,9 +189,17 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
                   ),
                 ])
               : el('p', { class: 'bb-note', text: 'Complete a run to open Bound levels.' }),
+            // Progress as four compact tiles, numbers first. They sit in the run card
+            // rather than a footer so the lower screen stays open for the backdrop.
+            el('div', { class: 'bb-gains bb-gains-compact' }, [
+              statTile('Echoes', formatNumber(profile.balance('echoes'))),
+              statTile('Runs', `${profile.counter('runsPlayed')}`),
+              statTile('Wins', `${profile.counter('runsWon')}`),
+              statTile('Best combo', `${profile.counter('bestCombo')}`),
+            ]),
             button({
               label: resume ? 'Begin new descent' : 'Begin descent',
-              className: resume ? '' : 'bb-primary',
+              className: resume ? 'bb-cta-secondary' : 'bb-primary bb-cta',
               title: resume ? 'Discards the run in progress' : undefined,
               hint: 'Enter',
               onClick: () => {
@@ -204,37 +212,48 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
               },
               onHover: host.playHover,
             }),
-          ]),
-
-          section('Progress', [
-            el('div', { class: 'bb-gains bb-gains-compact' }, [
-              statTile('Echoes', formatNumber(profile.balance('echoes'))),
-              statTile('Runs', `${profile.counter('runsPlayed')}`),
-              statTile('Wins', `${profile.counter('runsWon')}`),
-              statTile('Best combo', `${profile.counter('bestCombo')}`),
+            el('nav', { class: 'bb-menu-nav' }, [
+              button({ label: 'Unlocks', onClick: () => { host.playClick(); host.openUnlocks(); }, onHover: host.playHover }),
+              button({ label: 'Journal', onClick: () => { host.playClick(); host.openJournal(); }, onHover: host.playHover }),
+              button({ label: 'Settings', onClick: () => { host.playClick(); host.openSettings(); }, onHover: host.playHover }),
             ]),
-            row([
-              button({ label: 'Unlocks', onClick: () => { host.playClick(); host.openUnlocks(); } }),
-              button({ label: 'Journal', onClick: () => { host.playClick(); host.openJournal(); } }),
-              button({ label: 'Settings', onClick: () => { host.playClick(); host.openSettings(); } }),
-            ]),
-          ]),
-
-          history.length > 0
-            ? section(
-                'Recent runs',
-                history.map((record) =>
-                  el('p', { class: 'bb-note' }, [
-                    el('strong', { text: record.victory ? 'Won' : `Room ${record.roomsCleared}` }),
-                    ` - ${getBallClass(record.ballId).name} - ${record.identity} - ${formatDuration(record.durationSeconds)}`,
-                  ]),
-                ),
-              )
-            : null,
-        ]),
+            history.length > 0
+              ? el(
+                  'div',
+                  { class: 'bb-history' },
+                  history.map((record) =>
+                    el('p', { class: `bb-note${record.victory ? ' bb-history-won' : ''}` }, [
+                      el('strong', { text: record.victory ? 'Won' : `Room ${record.roomsCleared}` }),
+                      ` - ${getBallClass(record.ballId).name} - ${record.identity} - ${formatDuration(record.durationSeconds)}`,
+                    ]),
+                  ),
+                )
+              : null,
+          ],
+          'bb-menu-card bb-menu-run',
+        ),
       ]),
     ]),
   );
+}
+
+/**
+ * The title logo, one span per letter.
+ *
+ * Letters drop in one after another with a squash on landing, then idle in a slow
+ * wave - the name of the game, doing the thing the game is about. The text content
+ * is still the plain word, so it reads and searches normally; the heading carries
+ * an aria-label so screen readers do not spell it out letter by letter.
+ */
+function logo(first: string, second: string): HTMLElement {
+  let index = 0;
+  const word = (text: string, className: string): HTMLElement =>
+    el(
+      'span',
+      { class: `bb-logo-word ${className}` },
+      [...text].map((letter) => el('span', { class: 'bb-logo-letter', style: `--i:${index++}`, text: letter })),
+    );
+  return el('h1', { class: 'bb-logo', ariaLabel: `${first}${second}` }, [word(first, 'bb-logo-a'), word(second, 'bb-logo-b')]);
 }
 
 function statTile(label: string, value: string): HTMLElement {

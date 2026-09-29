@@ -12,9 +12,16 @@
  *
  * Everything else lives behind a key: the full build panel, the map, the journal.
  * Anything that is not needed *between two bounces* does not belong on screen.
+ *
+ * Every number that changes animates, because a value that silently swaps is a
+ * value the player misses. Integrity keeps a trailing "ghost" of what was just
+ * lost (the fighting-game health bar), the combo number pops on each hit, shards
+ * count up, and the whole bar shakes when you are hurt. The combo sits on the right
+ * edge rather than bottom centre, which is where the floor - and so the ball - is
+ * most of the time.
  */
 
-import { clamp01, formatNumber, lerp, TAU } from '../core/math';
+import { clamp, clamp01, damp, formatNumber, lerp, TAU } from '../core/math';
 import { comboFill, comboMultiplier, comboTier, COMBO_TIER_NAMES, momentumMultiplier } from '../sim/combo';
 import { bossBarInfo } from '../sim/bossLogic';
 import type { World } from '../sim/world';
@@ -22,6 +29,7 @@ import type { Run } from '../run/run';
 import type { SemanticPalette, Settings } from '../meta/settings';
 import { ARCHETYPE_LABELS } from '../gen/mapgen';
 import { boundName } from '../content/modifiers';
+import { alpha, darken, DISPLAY_FONT, easeOutBack, easeOutCubic, lighten, UI_FONT } from './paint';
 
 export interface HudContext {
   ctx: CanvasRenderingContext2D;
@@ -35,145 +43,409 @@ export interface HudContext {
   fps: number;
 }
 
-const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+const FONT = UI_FONT;
+
+/** Presentation state carried between frames; the run itself knows none of it. */
+interface HudState {
+  lastTime: number;
+  dt: number;
+  lastHp: number;
+  ghostHp: number;
+  ghostHold: number;
+  /** Seconds of damage shake remaining. */
+  hurt: number;
+  shardsShown: number;
+  lastShards: number;
+  shardPop: number;
+  lastCombo: number;
+  comboPop: number;
+  lastTier: number;
+  tierPop: number;
+  bossGhost: number;
+  bossLast: number;
+  bossHold: number;
+  bossHurt: number;
+}
+
+const states = new WeakMap<Run, HudState>();
+
+function stateFor(hud: HudContext): HudState {
+  let state = states.get(hud.run);
+  const ball = hud.world.ball;
+  if (!state) {
+    state = {
+      lastTime: hud.time,
+      dt: 0,
+      lastHp: ball.hp,
+      ghostHp: ball.hp,
+      ghostHold: 0,
+      hurt: 0,
+      shardsShown: hud.run.shards,
+      lastShards: hud.run.shards,
+      shardPop: 0,
+      lastCombo: 0,
+      comboPop: 0,
+      lastTier: 0,
+      tierPop: 0,
+      bossGhost: 1,
+      bossLast: 1,
+      bossHold: 0,
+      bossHurt: 0,
+    };
+    states.set(hud.run, state);
+  }
+  state.dt = clamp(hud.time - state.lastTime, 0, 0.1);
+  state.lastTime = hud.time;
+  return state;
+}
 
 export function drawHud(hud: HudContext): void {
   const { ctx, settings } = hud;
+  const state = stateFor(hud);
   ctx.save();
   ctx.scale(settings.uiScale, settings.uiScale);
   const scaledWidth = hud.width / settings.uiScale;
   const scaledHeight = hud.height / settings.uiScale;
+  ctx.textBaseline = 'alphabetic';
 
-  drawIntegrity(hud, scaledWidth);
-  drawCombo(hud, scaledWidth, scaledHeight);
-  drawResources(hud, scaledWidth);
+  drawLowHealthWarning(hud, scaledWidth, scaledHeight);
+  drawIntegrity(hud, state);
+  drawResources(hud, state, scaledWidth);
+  drawCombo(hud, state, scaledWidth);
   drawBuildStrip(hud, scaledHeight);
   drawRoomBanner(hud, scaledWidth);
-  drawBossBar(hud, scaledWidth);
+  drawBossBar(hud, state, scaledWidth);
   drawNotifications(hud, scaledWidth, scaledHeight);
-  drawLowHealthWarning(hud, scaledWidth, scaledHeight);
   if (settings.showFps) drawDiagnostics(hud, scaledWidth, scaledHeight);
 
   ctx.restore();
 }
 
+function motionOn(hud: HudContext): boolean {
+  return !hud.settings.reducedMotion;
+}
+
 /* ------------------------------------------------------------------ pieces -- */
 
-function drawIntegrity(hud: HudContext, width: number): void {
-  const { ctx, palette, world } = hud;
+/** A parallelogram: the HUD's one shape, matching the clipped corners of the menus. */
+function slant(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, skew: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x + skew, y);
+  ctx.lineTo(x + w + skew, y);
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.closePath();
+}
+
+function drawIntegrity(hud: HudContext, state: HudState): void {
+  const { ctx, palette, world, time } = hud;
   const ball = world.ball;
-  const x = 20;
-  const y = 20;
-  const w = 248;
-  const h = 18;
+  const dt = state.dt;
+
+  if (ball.hp < state.lastHp - 1e-6) {
+    state.ghostHold = 0.45;
+    state.hurt = 0.35;
+  }
+  if (ball.hp > state.ghostHp) state.ghostHp = ball.hp;
+  state.lastHp = ball.hp;
+  if (state.ghostHold > 0) state.ghostHold -= dt;
+  else state.ghostHp = damp(state.ghostHp, ball.hp, 6, dt);
+  state.hurt = Math.max(0, state.hurt - dt);
+
   const fraction = clamp01(ball.hp / ball.maxHp);
+  const ghost = clamp01(state.ghostHp / ball.maxHp);
+  const critical = fraction <= 0.3 && ball.alive;
 
-  ctx.fillStyle = 'rgba(8,10,16,0.66)';
-  roundRect(ctx, x - 4, y - 4, w + 8, h + 8, 6);
+  let x = 22;
+  let y = 20;
+  if (motionOn(hud) && state.hurt > 0) {
+    const k = state.hurt / 0.35;
+    x += Math.sin(time * 90) * 5 * k;
+    y += Math.cos(time * 77) * 3 * k;
+  }
+  const w = 250;
+  const h = 18;
+  const skew = 7;
+
+  // Plate
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,8,14,0.72)';
+  slant(ctx, x - 8, y - 7, w + 60, h + 14, skew + 2);
   ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
 
-  ctx.fillStyle = 'rgba(255,255,255,0.08)';
-  roundRect(ctx, x, y, w, h, 4);
+  // Track
+  ctx.fillStyle = 'rgba(255,255,255,0.07)';
+  slant(ctx, x, y, w, h, skew);
   ctx.fill();
 
   // The bar changes colour by band rather than continuously, so "I am in trouble"
   // is a discrete, glanceable state instead of a gradient the player has to judge.
   const colour = fraction > 0.5 ? palette.safe : fraction > 0.25 ? palette.reward : palette.danger;
-  ctx.fillStyle = colour;
-  roundRect(ctx, x, y, w * fraction, h, 4);
-  ctx.fill();
 
-  ctx.font = `700 12px ${FONT}`;
+  ctx.save();
+  slant(ctx, x, y, w, h, skew);
+  ctx.clip();
+  // Ghost: what the last hit took, lingering before it drains.
+  if (ghost > fraction) {
+    ctx.fillStyle = '#ffffff';
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(x + w * fraction, y, w * (ghost - fraction) + skew, h);
+    ctx.globalAlpha = 1;
+  }
+  const fill = ctx.createLinearGradient(0, y, 0, y + h);
+  fill.addColorStop(0, lighten(colour, 0.35));
+  fill.addColorStop(0.5, colour);
+  fill.addColorStop(1, darken(colour, 0.25));
+  ctx.fillStyle = fill;
+  ctx.fillRect(x, y, w * fraction + (fraction >= 1 ? skew : 0), h);
+  // Segment ticks every 10% so a chunk of damage is countable.
+  ctx.strokeStyle = 'rgba(6,8,14,0.45)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 1; i < 10; i++) {
+    const tx = x + (w * i) / 10;
+    ctx.moveTo(tx + skew, y);
+    ctx.lineTo(tx, y + h);
+  }
+  ctx.stroke();
+  // Gloss on the top half.
+  ctx.fillStyle = 'rgba(255,255,255,0.14)';
+  ctx.fillRect(x, y, w, h * 0.42);
+  ctx.restore();
+
+  if (critical && !hud.settings.reducedFlashing) {
+    ctx.strokeStyle = palette.danger;
+    ctx.globalAlpha = 0.5 + 0.5 * Math.sin(time * (6 + (1 - fraction / 0.3) * 6));
+    ctx.lineWidth = 2;
+    slant(ctx, x - 1, y - 1, w + 2, h + 2, skew);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // Readout, right of the bar.
   ctx.textAlign = 'left';
-  ctx.fillStyle = '#ffffff';
-  ctx.fillText(`${Math.ceil(ball.hp)} / ${Math.round(ball.maxHp)}`, x + 8, y + 13);
+  ctx.font = `17px ${DISPLAY_FONT}`;
+  ctx.lineWidth = 3;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(6,8,14,0.9)';
+  const hpText = `${Math.ceil(ball.hp)}`;
+  ctx.strokeText(hpText, x + w + 14, y + h - 1);
+  ctx.fillStyle = critical ? palette.danger : '#ffffff';
+  ctx.fillText(hpText, x + w + 14, y + h - 1);
+  const hpWidth = ctx.measureText(hpText).width;
+  ctx.font = `600 10px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.fillText(`/${Math.round(ball.maxHp)}`, x + w + 16 + hpWidth, y + h - 2);
 
-  // Shields sit next to the bar as discrete pips: a countable resource.
-  let pipX = x + w + 12;
+  // Shields and revives sit under the bar as discrete pips: a countable resource.
+  let pipX = x + 8;
+  const pipY = y + h + 13;
   for (let i = 0; i < Math.min(10, ball.shield); i++) {
+    hexagon(ctx, pipX, pipY, 5.5);
     ctx.fillStyle = palette.shield;
-    ctx.beginPath();
-    ctx.arc(pipX, y + h / 2, 5, 0, TAU);
     ctx.fill();
-    pipX += 14;
+    ctx.strokeStyle = 'rgba(6,8,14,0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    pipX += 15;
   }
   for (let i = 0; i < Math.min(4, ball.reviveCharges); i++) {
     ctx.strokeStyle = palette.safe;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(pipX, y + h / 2, 5.5, 0, TAU);
+    ctx.arc(pipX, pipY, 5.5, 0, TAU);
     ctx.stroke();
-    pipX += 14;
+    ctx.fillStyle = palette.safe;
+    ctx.fillRect(pipX - 1, pipY - 3.5, 2, 7);
+    ctx.fillRect(pipX - 3.5, pipY - 1, 7, 2);
+    pipX += 15;
   }
-  void width;
+  ctx.restore();
 }
 
-function drawCombo(hud: HudContext, width: number, height: number): void {
-  const { ctx, world, palette, run } = hud;
+function hexagon(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 6 + (i * Math.PI) / 3;
+    const px = x + Math.cos(a) * r;
+    const py = y + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+/**
+ * The combo meter. Big, slanted and loud on purpose: it is the game's score, and
+ * escalation should be felt rather than read. It pops on every hit, grows and
+ * shifts colour with each tier, announces a new tier, and its decay bar - the
+ * actionable part - jitters when it is about to run out.
+ */
+function drawCombo(hud: HudContext, state: HudState, width: number): void {
+  const { ctx, world, palette, run, time } = hud;
   const combo = world.combo;
+  const dt = state.dt;
+  if (combo.value > state.lastCombo) state.comboPop = 1;
+  state.lastCombo = combo.value;
+  state.comboPop = Math.max(0, state.comboPop - dt * 7);
+  const tier = comboTier(combo.value);
+  if (tier > state.lastTier) state.tierPop = 1;
+  state.lastTier = tier;
+  state.tierPop = Math.max(0, state.tierPop - dt * 1.6);
   if (combo.value <= 0) return;
 
   const stats = run.stats();
   const multiplier = comboMultiplier(combo, stats);
-  const tier = comboTier(combo.value);
   const fill = comboFill(combo);
-  const x = width / 2;
-  const y = height - 76;
+  const motion = motionOn(hud);
+  const x = width - 26;
+  const y = 128;
+  const color = tier >= 4 ? palette.crit : tier >= 2 ? palette.combo : lighten(palette.combo, 0.35);
 
-  ctx.textAlign = 'center';
-  // Tier drives size and colour, so escalation is felt rather than read.
-  const size = 26 + tier * 4;
-  ctx.font = `800 ${size}px ${FONT}`;
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.07);
+  const pop = motion ? 1 + easeOutCubic(state.comboPop) * 0.28 : 1;
+  const size = 30 + tier * 5;
+  ctx.scale(pop, pop);
+
+  ctx.textAlign = 'right';
+  ctx.lineJoin = 'round';
+  ctx.font = `${size}px ${DISPLAY_FONT}`;
   const label = `x${multiplier.toFixed(2)}`;
-  ctx.strokeText(label, x, y);
-  ctx.fillStyle = tier >= 4 ? palette.crit : palette.combo;
-  ctx.fillText(label, x, y);
+  ctx.lineWidth = size * 0.16;
+  ctx.strokeStyle = 'rgba(6,8,14,0.9)';
+  ctx.strokeText(label, 0, 0);
+  if (tier >= 2) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.globalAlpha = 0.35 + 0.15 * tier;
+    ctx.fillStyle = color;
+    ctx.fillText(label, 0, 2);
+    ctx.restore();
+  }
+  const gradient = ctx.createLinearGradient(0, -size, 0, 0);
+  gradient.addColorStop(0, lighten(color, 0.55));
+  gradient.addColorStop(1, color);
+  ctx.fillStyle = gradient;
+  ctx.fillText(label, 0, 0);
+  ctx.restore();
 
-  ctx.font = `600 11px ${FONT}`;
-  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  // Hits and tier name.
+  ctx.save();
+  ctx.textAlign = 'right';
+  ctx.font = `700 11px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fillText(`${Math.floor(combo.value)} HITS`, x, y + 18);
   const tierName = COMBO_TIER_NAMES[tier];
-  ctx.fillText(`${combo.value} impacts${tierName ? ` - ${tierName}` : ''}`, x, y + 16);
+  if (tierName) {
+    const announce = state.tierPop;
+    const tierScale = motion ? 1 + announce * 0.5 : 1;
+    ctx.font = `12px ${DISPLAY_FONT}`;
+    const tw = ctx.measureText(tierName.toUpperCase()).width;
+    ctx.save();
+    ctx.translate(x - tw / 2 - 6, y - size - 10);
+    ctx.scale(tierScale, tierScale);
+    ctx.fillStyle = alpha(color, 0.2 + announce * 0.5);
+    slant(ctx, -tw / 2 - 8, -12, tw + 14, 17, 4);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.fillText(tierName.toUpperCase(), 0, 1);
+    ctx.restore();
+  }
 
   // The decay bar is the actionable part: it says how long you have.
-  const barW = 150;
-  ctx.fillStyle = 'rgba(255,255,255,0.12)';
-  roundRect(ctx, x - barW / 2, y + 22, barW, 4, 2);
+  const barW = 140;
+  const barY = y + 25;
+  const urgent = fill < 0.3;
+  const jitter = urgent && motion ? Math.sin(time * 60) * 1.5 : 0;
+  ctx.fillStyle = 'rgba(6,8,14,0.7)';
+  slant(ctx, x - barW - 1 + jitter, barY - 1, barW + 2, 7, 3);
   ctx.fill();
-  ctx.fillStyle = fill < 0.3 ? palette.danger : palette.combo;
-  roundRect(ctx, x - barW / 2, y + 22, barW * fill, 4, 2);
+  ctx.fillStyle = urgent ? palette.danger : color;
+  if (urgent && !hud.settings.reducedFlashing) ctx.globalAlpha = 0.6 + 0.4 * Math.sin(time * 24);
+  slant(ctx, x - barW * fill + jitter, barY, barW * fill, 5, 3);
   ctx.fill();
+  ctx.globalAlpha = 1;
 
   // Momentum is a separate, always-available multiplier, shown only when it is
   // actually contributing.
   const speed = Math.hypot(world.ball.vx, world.ball.vy);
   const momentum = momentumMultiplier(speed, stats);
   if (momentum > 1.06) {
-    ctx.font = `600 11px ${FONT}`;
+    ctx.font = `700 11px ${FONT}`;
     ctx.fillStyle = palette.reward;
-    ctx.fillText(`momentum x${momentum.toFixed(2)}`, x, y + 40);
+    ctx.fillText(`MOMENTUM x${momentum.toFixed(2)}`, x, barY + 20);
   }
+  ctx.restore();
 }
 
-function drawResources(hud: HudContext, width: number): void {
+function drawResources(hud: HudContext, state: HudState, width: number): void {
   const { ctx, palette, run } = hud;
-  ctx.textAlign = 'right';
-  ctx.font = `700 14px ${FONT}`;
-  ctx.fillStyle = palette.reward;
-  ctx.fillText(`${formatNumber(run.shards)} shards`, width - 20, 33);
+  const dt = state.dt;
+  if (run.shards > state.lastShards) state.shardPop = 1;
+  if (run.shards < state.shardsShown) state.shardsShown = run.shards;
+  state.lastShards = run.shards;
+  // Count up quickly toward the real value; never lag by more than a moment.
+  state.shardsShown = run.shards - (run.shards - state.shardsShown) * Math.exp(-12 * dt);
+  if (Math.abs(run.shards - state.shardsShown) < 0.5) state.shardsShown = run.shards;
+  state.shardPop = Math.max(0, state.shardPop - dt * 6);
 
-  ctx.font = `600 11px ${FONT}`;
+  const x = width - 24;
+  const y = 38;
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,8,14,0.72)';
+  slant(ctx, x - 150, y - 25, 160, 58, 8);
+  ctx.fill();
+
+  const pop = motionOn(hud) ? 1 + state.shardPop * 0.22 : 1;
+  ctx.textAlign = 'right';
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(pop, pop);
+  ctx.font = `22px ${DISPLAY_FONT}`;
+  ctx.lineWidth = 3.5;
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(6,8,14,0.9)';
+  const value = formatNumber(Math.round(state.shardsShown));
+  ctx.strokeText(value, 0, 0);
+  ctx.fillStyle = palette.reward;
+  ctx.fillText(value, 0, 0);
+  const vw = ctx.measureText(value).width;
+  // Shard glyph: the same diamond the pickups use.
+  const gx = -vw - 14;
+  const gy = -8;
+  ctx.beginPath();
+  ctx.moveTo(gx, gy - 9);
+  ctx.lineTo(gx + 6, gy);
+  ctx.lineTo(gx, gy + 9);
+  ctx.lineTo(gx - 6, gy);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.beginPath();
+  ctx.moveTo(gx, gy - 9);
+  ctx.lineTo(gx + 3, gy - 1);
+  ctx.lineTo(gx, gy);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+
+  ctx.font = `700 10px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
   const act = run.map.acts.findIndex((a) => a.nodes.some((n) => n.id === run.currentNode.id)) + 1;
-  ctx.fillText(`depth ${act} - room ${run.currentNode.layer + 1}`, width - 20, 50);
-  if (run.rerollsLeft > 0) {
-    ctx.fillText(`${run.rerollsLeft} rerolls`, width - 20, 65);
-  }
+  const line = [`DEPTH ${act}`, `ROOM ${run.currentNode.layer + 1}`];
+  if (run.rerollsLeft > 0) line.push(`${run.rerollsLeft} REROLL${run.rerollsLeft > 1 ? 'S' : ''}`);
+  ctx.fillText(line.join('  ·  '), x, y + 18);
   if (run.bound.level > 0) {
     ctx.fillStyle = palette.danger;
-    ctx.fillText(boundName(run.bound.level), width - 20, 80);
+    ctx.fillText(boundName(run.bound.level).toUpperCase(), x, y + 44);
   }
+  ctx.restore();
 }
 
 /**
@@ -188,112 +460,212 @@ function drawBuildStrip(hud: HudContext, height: number): void {
   const upgrades = run.build.list();
   if (upgrades.length === 0) return;
 
-  const x = 20;
-  const y = height - 32;
-  const size = 15;
+  const x = 22;
+  const y = height - 30;
+  const size = 16;
   const gap = 5;
 
+  ctx.save();
   ctx.textAlign = 'center';
   for (const [index, entry] of upgrades.entries()) {
     const cx = x + index * (size + gap);
     if (cx > hud.width - 60) break;
-    ctx.fillStyle = familyColour(entry.def.family);
-    ctx.globalAlpha = 0.9;
-    roundRect(ctx, cx, y, size, size, 3);
+    const colour = familyColour(entry.def.family);
+    ctx.fillStyle = 'rgba(6,8,14,0.7)';
+    diamond(ctx, cx + size / 2, y + size / 2 + 1.5, size * 0.66);
     ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = 'rgba(0,0,0,0.8)';
-    ctx.font = `800 10px ${FONT}`;
-    ctx.fillText(entry.def.name.slice(0, 1).toUpperCase(), cx + size / 2, y + size - 4);
+    const g = ctx.createLinearGradient(0, y, 0, y + size);
+    g.addColorStop(0, lighten(colour, 0.35));
+    g.addColorStop(1, darken(colour, 0.2));
+    ctx.fillStyle = g;
+    diamond(ctx, cx + size / 2, y + size / 2, size * 0.62);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(6,8,14,0.85)';
+    ctx.font = `9px ${DISPLAY_FONT}`;
+    ctx.fillText(entry.def.name.slice(0, 1).toUpperCase(), cx + size / 2, y + size / 2 + 3.5);
     if (entry.stacks > 1) {
       ctx.fillStyle = '#ffffff';
-      ctx.font = `700 8px ${FONT}`;
-      ctx.fillText(`${entry.stacks}`, cx + size - 2, y + 8);
+      ctx.font = `700 9px ${FONT}`;
+      ctx.fillText(`${entry.stacks}`, cx + size - 1, y + 3);
     }
   }
 
   const synergies = run.build.synergies();
   const identity = run.build.identity();
   ctx.textAlign = 'left';
-  ctx.font = `600 11px ${FONT}`;
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = `700 10px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
   const parts: string[] = [];
-  if (identity.length > 0) parts.push(identity.map((i) => i.name).join(' / '));
-  if (synergies.length > 0) parts.push(`${synergies.length} synergy${synergies.length > 1 ? 's' : ''}`);
-  parts.push('Tab for build');
-  ctx.fillText(parts.join('  -  '), x, y - 8);
+  if (identity.length > 0) parts.push(identity.map((i) => i.name.toUpperCase()).join(' / '));
+  if (synergies.length > 0) parts.push(`${synergies.length} SYNERG${synergies.length > 1 ? 'IES' : 'Y'}`);
+  parts.push('TAB FOR BUILD');
+  ctx.fillText(parts.join('  ·  '), x, y - 9);
+  ctx.restore();
 }
 
+function diamond(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x, y - r);
+  ctx.lineTo(x + r, y);
+  ctx.lineTo(x, y + r);
+  ctx.lineTo(x - r, y);
+  ctx.closePath();
+}
+
+/**
+ * Room title card: two rules draw outward from the centre, the room type rises
+ * into place between them, and the whole card dissolves after three seconds.
+ */
 function drawRoomBanner(hud: HudContext, width: number): void {
   const { ctx, run, world, palette } = hud;
   // Only for the first few seconds: after that it is clutter.
   const age = world.roomTime;
-  if (age > 4) return;
-  const alpha = age < 3 ? 1 : 1 - (age - 3);
-  ctx.globalAlpha = clamp01(alpha);
+  if (age > 3.6) return;
+  const motion = motionOn(hud);
+  const inT = motion ? easeOutCubic((age - 0.25) / 0.5) : 1;
+  const out = clamp01((age - 2.9) / 0.7);
+  const opacity = clamp01(inT) * (1 - out);
+  if (opacity <= 0) return;
+
+  const cx = width / 2;
+  const y = 46;
+  const label = (ARCHETYPE_LABELS[run.currentRoom.archetype] ?? run.currentRoom.archetype).toUpperCase();
+  ctx.save();
+  ctx.globalAlpha = opacity;
   ctx.textAlign = 'center';
-  ctx.font = `700 17px ${FONT}`;
+  ctx.font = `26px ${DISPLAY_FONT}`;
+  const spaced = label.split('').join(' ');
+  const tw = ctx.measureText(spaced).width;
+  const rule = (tw / 2 + 90) * inT;
+  const rise = motion ? (1 - inT) * 12 : 0;
+
+  ctx.strokeStyle = alpha(palette.perfect, 0.7);
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(cx - rule, y - 9);
+  ctx.lineTo(cx - tw / 2 - 16, y - 9);
+  ctx.moveTo(cx + tw / 2 + 16, y - 9);
+  ctx.lineTo(cx + rule, y - 9);
+  ctx.stroke();
+
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = 'rgba(6,8,14,0.85)';
+  ctx.strokeText(spaced, cx, y + rise);
   ctx.fillStyle = '#ffffff';
-  const label = ARCHETYPE_LABELS[run.currentRoom.archetype] ?? run.currentRoom.archetype;
-  ctx.fillText(label, width / 2, 42);
-  ctx.font = `500 12px ${FONT}`;
+  ctx.fillText(spaced, cx, y + rise);
+  ctx.font = `600 12px ${FONT}`;
   ctx.fillStyle = palette.neutral;
-  ctx.fillText(run.currentRoom.templateName, width / 2, 60);
-  ctx.globalAlpha = 1;
+  ctx.lineWidth = 3;
+  const sub = run.currentRoom.templateName.toUpperCase();
+  ctx.strokeText(sub, cx, y + 20 + rise * 1.5);
+  ctx.fillText(sub, cx, y + 20 + rise * 1.5);
+  ctx.restore();
 }
 
-function drawBossBar(hud: HudContext, width: number): void {
-  const { ctx, world, palette } = hud;
+function drawBossBar(hud: HudContext, state: HudState, width: number): void {
+  const { ctx, world, palette, time } = hud;
   const info = bossBarInfo(world);
-  if (!info) return;
-  const w = Math.min(560, width - 120);
-  const x = (width - w) / 2;
-  const y = 74;
+  if (!info) {
+    state.bossGhost = 1;
+    state.bossLast = 1;
+    return;
+  }
+  const dt = state.dt;
+  if (info.fraction < state.bossLast - 1e-6) {
+    state.bossHold = 0.5;
+    state.bossHurt = 0.2;
+  }
+  if (info.fraction > state.bossGhost) state.bossGhost = info.fraction;
+  state.bossLast = info.fraction;
+  if (state.bossHold > 0) state.bossHold -= dt;
+  else state.bossGhost = damp(state.bossGhost, info.fraction, 4, dt);
+  state.bossHurt = Math.max(0, state.bossHurt - dt);
 
-  ctx.fillStyle = 'rgba(8,10,16,0.7)';
-  roundRect(ctx, x - 6, y - 22, w + 12, 44, 6);
+  const w = Math.min(600, width - 140);
+  let x = (width - w) / 2;
+  // Sits below the room title card, which shares the top centre for three seconds.
+  const y = 104;
+  if (motionOn(hud) && state.bossHurt > 0) x += Math.sin(time * 80) * 3 * (state.bossHurt / 0.2);
+  const skew = 8;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(6,8,14,0.78)';
+  slant(ctx, x - 14, y - 30, w + 28, 52, skew + 4);
   ctx.fill();
+  ctx.strokeStyle = alpha(palette.danger, 0.5);
+  ctx.lineWidth = 1;
+  ctx.stroke();
 
   ctx.textAlign = 'center';
-  ctx.font = `800 15px ${FONT}`;
+  ctx.font = `18px ${DISPLAY_FONT}`;
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(6,8,14,0.9)';
+  const name = info.name.toUpperCase();
+  ctx.strokeText(name, width / 2, y - 9);
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(info.name, width / 2, y - 6);
-  ctx.font = `600 10px ${FONT}`;
-  ctx.fillStyle = palette.neutral;
-  ctx.fillText(info.phase.toUpperCase(), width / 2, y + 18);
+  ctx.fillText(name, width / 2, y - 9);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.12)';
-  roundRect(ctx, x, y, w, 8, 4);
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  slant(ctx, x, y, w, 10, skew);
   ctx.fill();
-  ctx.fillStyle = palette.danger;
-  roundRect(ctx, x, y, w * info.fraction, 8, 4);
-  ctx.fill();
+  ctx.save();
+  slant(ctx, x, y, w, 10, skew);
+  ctx.clip();
+  ctx.fillStyle = '#ffffff';
+  ctx.globalAlpha = 0.8;
+  ctx.fillRect(x, y, w * state.bossGhost + skew, 10);
+  ctx.globalAlpha = 1;
+  const g = ctx.createLinearGradient(0, y, 0, y + 10);
+  g.addColorStop(0, lighten(palette.danger, 0.3));
+  g.addColorStop(1, darken(palette.danger, 0.25));
+  ctx.fillStyle = g;
+  ctx.fillRect(x, y, w * info.fraction, 10);
+  ctx.restore();
+
+  if (info.phase) {
+    ctx.font = `700 10px ${FONT}`;
+    ctx.fillStyle = palette.neutral;
+    ctx.fillText(info.phase.toUpperCase().split('').join(' '), width / 2, y + 23);
+  }
+  ctx.restore();
 }
 
 function drawNotifications(hud: HudContext, width: number, height: number): void {
   const { ctx, run, palette } = hud;
   const now = Date.now();
   const recent = run.notifications.filter((n) => now - n.at < 3400).slice(-4);
+  ctx.save();
   ctx.textAlign = 'center';
+  ctx.lineJoin = 'round';
   for (const [index, notification] of recent.entries()) {
-    const age = (now - notification.at) / 3400;
-    ctx.globalAlpha = clamp01(1 - age ** 3);
-    ctx.font = `700 ${notification.tone === 'rare' ? 18 : 14}px ${FONT}`;
+    const ageSeconds = (now - notification.at) / 1000;
+    const age = ageSeconds / 3.4;
+    const opacity = clamp01(1 - age ** 3) * clamp01(ageSeconds / 0.08);
+    const pop = motionOn(hud) ? easeOutBack(clamp01(ageSeconds / 0.22), 2.4) : 1;
+    const rare = notification.tone === 'rare';
+    ctx.globalAlpha = opacity;
     ctx.fillStyle =
       notification.tone === 'good'
         ? palette.safe
         : notification.tone === 'bad'
           ? palette.danger
-          : notification.tone === 'rare'
+          : rare
             ? palette.reward
             : '#ffffff';
-    const y = height * 0.28 + index * 22 - lerp(0, 10, age);
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-    ctx.strokeText(notification.text, width / 2, y);
-    ctx.fillText(notification.text, width / 2, y);
+    const y = height * 0.28 + index * 26 - lerp(0, 10, age);
+    ctx.save();
+    ctx.translate(width / 2, y);
+    ctx.scale(pop, pop);
+    ctx.font = rare ? `20px ${DISPLAY_FONT}` : `700 15px ${FONT}`;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(6,8,14,0.85)';
+    ctx.strokeText(notification.text, 0, 0);
+    ctx.fillText(notification.text, 0, 0);
+    ctx.restore();
   }
-  ctx.globalAlpha = 1;
+  ctx.restore();
 }
 
 /**
@@ -301,27 +673,34 @@ function drawNotifications(hud: HudContext, width: number, height: number): void
  *
  * Positioned at the edges specifically so it cannot obscure the arena: the one
  * moment the player most needs to see clearly is the moment they are nearly dead.
+ * It beats like a heart, faster the closer to death.
  */
 function drawLowHealthWarning(hud: HudContext, width: number, height: number): void {
-  const { ctx, world, palette, settings, time } = hud;
+  const { ctx, world, settings, time } = hud;
   const fraction = world.ball.hp / world.ball.maxHp;
   if (fraction > 0.3 || !world.ball.alive) return;
   const severity = 1 - fraction / 0.3;
-  const pulse = settings.reducedFlashing ? 0.5 : (Math.sin(time * 6) + 1) / 2;
-  const alpha = 0.1 + severity * 0.22 * (0.5 + pulse * 0.5);
-  const thickness = 52;
-  const gradient = ctx.createLinearGradient(0, 0, 0, thickness);
-  gradient.addColorStop(0, `rgba(255,60,90,${alpha})`);
-  gradient.addColorStop(1, 'rgba(255,60,90,0)');
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, thickness);
+  const rate = 1.2 + severity * 1.4;
+  const phase = (time * rate) % 1;
+  // Two beats per cycle: lub-dub.
+  const beat = settings.reducedFlashing ? 0.5 : Math.max(Math.exp(-phase * 14), Math.exp(-Math.abs(phase - 0.22) * 14) * 0.7);
+  const opacity = 0.12 + severity * 0.2 + beat * 0.16 * (0.5 + severity);
+  const thickness = 60 + severity * 30;
   ctx.save();
-  ctx.translate(0, height);
-  ctx.scale(1, -1);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, thickness);
+  const edges: Array<[number, number, number, number, number, number, number, number]> = [
+    [0, 0, 0, thickness, 0, 0, width, thickness],
+    [0, height, 0, height - thickness, 0, height - thickness, width, thickness],
+    [0, 0, thickness, 0, 0, 0, thickness, height],
+    [width, 0, width - thickness, 0, width - thickness, 0, thickness, height],
+  ];
+  for (const [x0, y0, x1, y1, rx, ry, rw, rh] of edges) {
+    const gradient = ctx.createLinearGradient(x0, y0, x1, y1);
+    gradient.addColorStop(0, `rgba(255,50,80,${opacity})`);
+    gradient.addColorStop(1, 'rgba(255,50,80,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(rx, ry, rw, rh);
+  }
   ctx.restore();
-  void palette;
 }
 
 function drawDiagnostics(hud: HudContext, width: number, height: number): void {
@@ -383,17 +762,18 @@ export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w
  *
  * Shown only during the very first room of a player's first run, and only until
  * they have used each verb once. Teaching by doing beats a tutorial screen, but
- * the player still has to be told which key to press.
+ * the player still has to be told which key to press - so the key is drawn as a
+ * key cap, which is how every game says "press this".
  */
 export function drawControlHints(
   hud: HudContext,
   learned: { steer: boolean; bounce: boolean; dive: boolean },
 ): void {
-  const { ctx, width, height, settings } = hud;
-  const hints: Array<[boolean, string]> = [
-    [learned.steer, 'A / D  steer while airborne'],
-    [learned.bounce, 'SPACE  just before contact for a perfect bounce'],
-    [learned.dive, 'S  dive to hit harder'],
+  const { ctx, width, height, settings, time } = hud;
+  const hints: Array<[boolean, string, string]> = [
+    [learned.steer, 'A / D', 'steer while airborne'],
+    [learned.bounce, 'SPACE', 'just before contact for a perfect bounce'],
+    [learned.dive, 'S', 'dive to hit harder'],
   ];
   if (hints.every(([done]) => done)) return;
 
@@ -401,17 +781,38 @@ export function drawControlHints(
   ctx.scale(settings.uiScale, settings.uiScale);
   const scaledWidth = width / settings.uiScale;
   const scaledHeight = height / settings.uiScale;
-  ctx.textAlign = 'center';
-  let y = scaledHeight * 0.62;
-  for (const [done, text] of hints) {
+  let y = scaledHeight * 0.6;
+  const bob = settings.reducedMotion ? 0 : Math.sin(time * 3) * 2;
+  for (const [done, key, text] of hints) {
     if (done) continue;
+    ctx.font = `12px ${DISPLAY_FONT}`;
+    const kw = ctx.measureText(key).width + 18;
     ctx.font = `600 14px ${FONT}`;
-    ctx.fillStyle = 'rgba(255,255,255,0.75)';
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-    ctx.strokeText(text, scaledWidth / 2, y);
-    ctx.fillText(text, scaledWidth / 2, y);
-    y += 22;
+    const tw = ctx.measureText(text).width;
+    const total = kw + 10 + tw;
+    const left = scaledWidth / 2 - total / 2;
+
+    // Key cap: a raised face over a darker base.
+    ctx.fillStyle = 'rgba(6,8,14,0.85)';
+    roundRect(ctx, left, y - 15 + bob, kw, 24, 5);
+    ctx.fill();
+    ctx.fillStyle = '#e8eef8';
+    roundRect(ctx, left, y - 17 + bob, kw, 21, 5);
+    ctx.fill();
+    ctx.fillStyle = '#0b0e16';
+    ctx.font = `12px ${DISPLAY_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(key, left + kw / 2, y - 2 + bob);
+
+    ctx.textAlign = 'left';
+    ctx.font = `600 14px ${FONT}`;
+    ctx.lineWidth = 3.5;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = 'rgba(6,8,14,0.8)';
+    ctx.strokeText(text, left + kw + 10, y - 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.fillText(text, left + kw + 10, y - 2);
+    y += 32;
   }
   ctx.restore();
 }
