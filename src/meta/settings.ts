@@ -17,6 +17,7 @@
 
 export type ColorMode = 'default' | 'protan' | 'deutan' | 'tritan' | 'highContrast';
 export type TrajectoryMode = 'off' | 'reticle' | 'full';
+export type TouchMode = 'auto' | 'on' | 'off';
 
 export interface Settings {
   /* audio */
@@ -54,6 +55,18 @@ export interface Settings {
   /** Holds the bounce input instead of requiring a tap for the perfect window. */
   holdToArm: boolean;
 
+  /* touch */
+  /** On-screen controls: shown on touch devices (`auto`), always, or never. */
+  touchControls: TouchMode;
+  /** Size of the on-screen controls. */
+  touchScale: number;
+  /** Puts the steering stick on the right and the buttons on the left. */
+  touchSwapSides: boolean;
+  /** Opacity of the on-screen controls while idle. */
+  touchOpacity: number;
+  /** On touch devices, enter fullscreen (and landscape where allowed) on starting a run. */
+  fullscreenOnStart: boolean;
+
   /* misc */
   showFps: boolean;
   showSeed: boolean;
@@ -85,6 +98,12 @@ export function defaultSettings(): Settings {
     vibration: true,
     swapBrakeDash: false,
     holdToArm: false,
+
+    touchControls: 'auto',
+    touchScale: 1,
+    touchSwapSides: false,
+    touchOpacity: 0.55,
+    fullscreenOnStart: true,
 
     showFps: false,
     showSeed: true,

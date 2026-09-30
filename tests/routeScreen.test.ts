@@ -23,6 +23,8 @@ function host(profile: Profile): ScreenHost {
     openMenu: noop,
     openSettings: noop,
     openJournal: noop,
+    openCareer: noop,
+    touch: false,
   };
 }
 

@@ -31,7 +31,7 @@ import { resetCombo } from '../sim/combo';
 import { EnemyFlag } from '../sim/entities';
 import { hasFlag } from '../sim/enemyLogic';
 import { cleanupBossProps } from '../sim/bossLogic';
-import type { ResolvedStats } from '../sim/stats';
+import { STAT_SPECS, type ResolvedStats, type StatKey } from '../sim/stats';
 import { BuildState } from '../game/build';
 import { getUpgrade, priceOf, rollOffers, type UpgradeDef } from '../game/upgradeSystem';
 import '../content/upgrades/index';
@@ -44,7 +44,7 @@ import type { BiomeId, RoomArchetype } from '../content/ids';
 import { MAP_GATES, actOf, generateMap, choicesFrom, type ActMap, type MapNode, type RunMap } from '../gen/mapgen';
 import { generateRoom, type GeneratedRoom, type Interactable } from '../gen/roomgen';
 import { ROOM_H, ROOM_W } from '../gen/templates';
-import type { Profile } from '../meta/profile';
+import type { CareerResult, Profile } from '../meta/profile';
 import { RUN_SAVE_VERSION, type RunSnapshot } from './runSave';
 
 export type RunPhase =
@@ -286,6 +286,13 @@ export class Run {
     this.bus.emit('runStarted', { seed: this.seed, ballId: this.ballId, boundLevel: this.bound.level });
     this.emitRoomEntered();
     this.resumed = restore !== undefined;
+
+    // Opening Hand (Reliquary): the run begins with an offer, before the first
+    // bounce. Only on a fresh start - a resumed run already took it.
+    if (!restore && this.profile.isUnlocked('opening_hand')) {
+      this.pendingRewards = 1;
+      this.presentNextReward('Opening hand', this.profile.isUnlocked('opening_attuned') ? 1.2 : 0.3);
+    }
   }
 
   /** True when this run was resumed from a save rather than started fresh. */
@@ -317,21 +324,21 @@ export class Run {
     const permanent = this.profile.permanentModifiers();
     // Bound penalties expressed as multipliers are applied here rather than being
     // folded into the ball class, so the class card always tells the truth.
+    //
+    // Both loops start from the class value *or the stat's default*. They used to
+    // fall back to the modifier itself when the class did not override a stat, so
+    // on Kernel (which overrides nothing) Tempering's +8 integrity set integrity to
+    // 8, Broader Offers set the offer size to one card, and Bound 11's x0.66
+    // integrity left a single point. Every class except the specialists was hit.
     const base = { ...ballClass.base };
+    const current = (key: StatKey): number => base[key] ?? STAT_SPECS[key].base;
     for (const [key, value] of Object.entries(this.bound.playerModifiers)) {
-      const typed = key as keyof typeof base;
-      const current = base[typed];
-      if (value < 1 && value > 0 && current !== undefined) {
-        base[typed] = current * value;
-      } else if (current !== undefined) {
-        base[typed] = current + value;
-      } else {
-        base[typed] = value;
-      }
+      const typed = key as StatKey;
+      base[typed] = value < 1 && value > 0 ? current(typed) * value : current(typed) + value;
     }
     for (const [key, value] of Object.entries(permanent)) {
-      const typed = key as keyof typeof base;
-      base[typed] = (base[typed] ?? undefined) === undefined ? value : (base[typed] as number) + value;
+      const typed = key as StatKey;
+      base[typed] = current(typed) + (value as number);
     }
     this.build.setBallClass(base);
 
@@ -811,7 +818,8 @@ export class Run {
       rerolls: this.rerollsLeft,
       remaining: this.pendingRewards,
       title,
-      skipShards: 18 + this.currentNode.depth * 2,
+      // Salvage Rights (Reliquary) pays half again for walking away.
+      skipShards: Math.round((18 + this.currentNode.depth * 2) * (this.profile.isUnlocked('salvage_rights') ? 1.5 : 1)),
     };
     this.phase = 'reward';
     this.touchUi();
@@ -1199,7 +1207,9 @@ export class Run {
     this.profile.addCurrency('echoes', echoes);
     this.profile.addCurrency('relics', this.relics);
 
-    if (this.telemetry.damageTaken <= 0 || !this.everDroppedBelowHalf) this.profile.bump('compositeRuns');
+    // "Finish a run without dropping below half" - a run abandoned after two
+    // rooms used to qualify, paying the achievement for walking away.
+    if (victory && (this.telemetry.damageTaken <= 0 || !this.everDroppedBelowHalf)) this.profile.bump('compositeRuns');
 
     const identity = this.build.identity();
     this.profile.recordRun({
@@ -1223,6 +1233,24 @@ export class Run {
     });
 
     this.earnedEchoes = echoes;
+    // The career is applied after the run is recorded (so win counters are
+    // current) and before achievements are checked (so a rank or contract reached
+    // by this run can complete one in the same summary).
+    this.career = this.profile.applyRunProgress({
+      ballId: this.ballId,
+      victory,
+      boundLevel: this.bound.level,
+      roomsCleared: this.telemetry.roomsCleared,
+      enemiesKilled: this.telemetry.enemiesKilled,
+      elitesKilled: this.telemetry.elitesKilled,
+      bossesKilled: this.telemetry.bossesKilled,
+      perfectBounces: this.telemetry.perfectBounces,
+      bestCombo: this.telemetry.bestCombo,
+      propsDestroyed: this.telemetry.propsDestroyed,
+      shardsEarned: this.telemetry.shardsEarned,
+      depth: this.currentAct().tier + 1,
+      synergies: this.build.synergies().length,
+    });
     this.newAchievements = this.profile.checkAchievements();
     this.bus.emit('runEnded', { victory, cause });
     this.profile.flush();
@@ -1233,6 +1261,8 @@ export class Run {
   /** Where those echoes came from, so the summary can say why. */
   echoBreakdown: Array<{ label: string; amount: number }> = [];
   newAchievements: ReturnType<Profile['checkAchievements']> = [];
+  /** What this run moved on the career; set when the run finishes. */
+  career: CareerResult | null = null;
   private everDroppedBelowHalf = false;
 
   /** Called from the game loop so the "never below half" flag stays accurate. */

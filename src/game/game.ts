@@ -29,12 +29,16 @@ import { FxSystem } from '../render/fx';
 import { MenuBackdrop } from '../render/backdrop';
 import { drawControlHints, drawHud } from '../render/hud';
 import { AudioEngine } from '../audio/audio';
-import { InputManager, type ActionName } from './input';
+import { InputManager, coarsePointer, type ActionName } from './input';
 import { DebugTools } from './debug';
-import { renderMainMenu, renderJournal, renderSettings, renderUnlocks, type MenuHost } from '../ui/menus';
+import { computeLayout, readSafeArea, type ScreenLayout } from './layout';
+import { touchGeometry, touchTopReserve } from './touch';
+import { renderCareer, renderMainMenu, renderJournal, renderSettings, renderUnlocks, type MenuHost } from '../ui/menus';
 import { renderBuild, renderEvent, renderMap, renderPause, renderResults, renderReward, type ScreenHost } from '../ui/screens';
-import { clear } from '../ui/dom';
+import { clear, installTapTips } from '../ui/dom';
 import { getBiome } from '../content/biomes';
+import { FINISH_BY_ID } from '../content/career';
+import { UI_FONT } from '../render/paint';
 
 type Screen =
   | 'menu'
@@ -47,7 +51,8 @@ type Screen =
   | 'results'
   | 'settings'
   | 'journal'
-  | 'unlocks';
+  | 'unlocks'
+  | 'career';
 
 export class Game {
   private readonly canvas: HTMLCanvasElement;
@@ -84,6 +89,9 @@ export class Game {
   /** First-run teaching state: which verbs the player has used. */
   private learned = { steer: false, bounce: false, dive: false };
 
+  /** Current screen geometry: safe area, arena placement, touch controls. */
+  private layout: ScreenLayout;
+
   constructor(canvas: HTMLCanvasElement, overlay: HTMLElement) {
     this.canvas = canvas;
     this.overlay = overlay;
@@ -109,16 +117,19 @@ export class Game {
         this.audio.resume();
       },
       onAction: (action) => this.handleAction(action),
+      onTouchDetected: () => this.relayout(),
     });
 
     this.renderer.updateSettings(this.profile.settings);
-    this.renderer.resize();
+    this.layout = computeLayout(this.renderer.viewWidth, this.renderer.viewHeight, readSafeArea(), false);
+    this.relayout();
     this.applyInterfacePreferences();
+    installTapTips(overlay);
 
-    globalThis.addEventListener('resize', () => {
-      this.renderer.resize();
-      if (this.run) this.renderer.configureFor(this.run.world);
-    });
+    globalThis.addEventListener('resize', () => this.relayout());
+    // Mobile browsers resize the visual viewport (toolbars, rotation) without
+    // always firing a window resize in time; listen to both.
+    globalThis.visualViewport?.addEventListener('resize', () => this.relayout());
     globalThis.addEventListener('keydown', (event) => this.handleRawKey(event));
     document.addEventListener('visibilitychange', () => {
       if (document.hidden && this.profile.settings.pauseOnBlur && this.screen === 'playing') this.setScreen('pause');
@@ -182,6 +193,10 @@ export class Game {
     const run = this.run;
     const playing = this.screen === 'playing' && run !== null && !run.finished;
 
+    // The touch controls come and go with the input device (a tap shows them, a
+    // key press hides them on a laptop), and the arena layout depends on them.
+    if (this.input.touchActive() !== this.layout.touch) this.relayout();
+
     if (playing && run) {
       const input = this.input.sample(realDelta);
       this.trackLearning(input.moveX, input.bouncePressed, input.moveY);
@@ -233,10 +248,12 @@ export class Game {
     this.fx.update(realDelta);
 
     if (run) {
+      const finish = FINISH_BY_ID[this.profile.career.finish];
       this.renderer.draw({
         world: run.world,
         biome: getBiome(run.currentRoom.biome),
         ballClassId: run.ballId,
+        finish: finish && finish.color ? finish : undefined,
         alpha: this.clock.alpha,
         time: this.clock.realTime,
       });
@@ -250,10 +267,31 @@ export class Game {
         world: run.world,
         time: this.clock.realTime,
         fps: this.fps,
+        layout: {
+          arena: this.layout.arena,
+          safe: this.layout.safe,
+          compact: this.layout.compact,
+          touch: this.layout.touch,
+          portrait: this.layout.portrait,
+          topRightReserve: touchTopReserve(this.layout, this.profile.settings),
+        },
       };
       if (this.screen === 'playing' || this.screen === 'build') {
+        this.drawTouchDeck();
         drawHud(hud);
         if (this.isFirstRun()) drawControlHints(hud, this.learned);
+        if (this.layout.touch) {
+          const stats = run.stats();
+          const ball = run.world.ball;
+          this.input.touch.setDashShown(stats.airDashCharges > 0);
+          this.input.touch.draw(this.renderer.context, this.profile.settings, {
+            dashAvailable: stats.airDashCharges > 0,
+            dashReady: ball.airDashes > 0 && ball.dashCooldown <= 0,
+            time: this.clock.realTime,
+            reducedMotion: this.profile.settings.reducedMotion,
+            accent: this.renderer.semanticPalette.perfect,
+          });
+        }
       }
       if (this.debug.enabled) {
         const ctx = this.renderer.context;
@@ -323,6 +361,79 @@ export class Game {
     this.backdrop.draw(ctx, w, h, realDelta, this.profile.settings.reducedMotion);
   }
 
+  /**
+   * Recomputes the screen layout: canvas size, safe area, where the arena sits,
+   * and where the touch controls go. Cheap, and called on every resize, rotation,
+   * settings change, and whenever the touch controls appear or disappear.
+   */
+  private relayout(): void {
+    this.renderer.resize();
+    const settings = this.profile.settings;
+    this.layout = computeLayout(
+      this.renderer.viewWidth,
+      this.renderer.viewHeight,
+      readSafeArea(),
+      this.input.touchActive(),
+      settings.uiScale,
+    );
+    this.input.touch.visible = this.layout.touch;
+    this.input.touch.setGeometry(touchGeometry(this.layout, settings));
+    this.renderer.arena = this.layout.arena;
+    if (this.run) this.renderer.configureFor(this.run.world);
+    document.documentElement.classList.toggle('bb-touch', this.layout.touch);
+  }
+
+  /**
+   * In portrait the space under the arena is the control deck. It gets a quiet
+   * backdrop, so it reads as part of the device rather than as empty scenery, and
+   * a one-line suggestion to turn the phone for a bigger arena.
+   */
+  private drawTouchDeck(): void {
+    const layout = this.layout;
+    if (!layout.touch || !layout.portrait) return;
+    const ctx = this.renderer.context;
+    const top = layout.deckTop;
+    ctx.save();
+    const gradient = ctx.createLinearGradient(0, top, 0, layout.height);
+    gradient.addColorStop(0, 'rgba(4,6,12,0.55)');
+    gradient.addColorStop(1, 'rgba(4,6,12,0.85)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, top, layout.width, layout.height - top);
+    ctx.strokeStyle = 'rgba(150,180,230,0.16)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, top + 0.5);
+    ctx.lineTo(layout.width, top + 0.5);
+    ctx.stroke();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.38)';
+    ctx.font = `600 11px ${UI_FONT}`;
+    const hintY = top + Math.min(64, (layout.height - top) * 0.14) + 30;
+    ctx.fillText('TURN YOUR PHONE SIDEWAYS FOR A BIGGER ARENA', layout.width / 2, hintY);
+    ctx.restore();
+  }
+
+  /**
+   * Fullscreen, and landscape where the browser allows locking it, when a run
+   * starts on a touch device. Called from the click that starts the run, which is
+   * the user gesture both APIs require. Every failure is silent: iOS Safari, for
+   * one, supports neither on iPhone, and the game plays fine without them.
+   */
+  private enterImmersive(): void {
+    if (!this.profile.settings.fullscreenOnStart) return;
+    if (!this.layout.touch && !coarsePointer()) return;
+    const root = document.documentElement;
+    if (document.fullscreenElement || typeof root.requestFullscreen !== 'function') return;
+    root
+      .requestFullscreen({ navigationUI: 'hide' })
+      .then(() => {
+        const orientation = screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> };
+        return orientation?.lock?.('landscape');
+      })
+      .catch(() => undefined);
+  }
+
   /* ----------------------------------------------------------------- screens -- */
 
   private setScreen(screen: Screen): void {
@@ -330,6 +441,9 @@ export class Game {
     this.screen = screen;
     this.uiDirty = true;
     this.clock.resync();
+    // A finger resting on the glass when a menu opened must not still be "held"
+    // when play resumes.
+    this.input.touch.reset();
   }
 
   /** Keeps the DOM overlay in sync with the run's phase and the current screen. */
@@ -338,7 +452,12 @@ export class Game {
     if (run) {
       // The run owns its own phase; the screen follows it unless the player has
       // deliberately opened a nested screen.
-      const nested = this.screen === 'build' || this.screen === 'pause' || this.screen === 'settings' || this.screen === 'journal';
+      const nested =
+        this.screen === 'build' ||
+        this.screen === 'pause' ||
+        this.screen === 'settings' ||
+        this.screen === 'journal' ||
+        this.screen === 'career';
       if (!nested) {
         const desired: Screen =
           run.phase === 'reward'
@@ -374,12 +493,15 @@ export class Game {
         // Starting fresh discards any shelved run, which is the only destructive
         // thing the menu can do, so it is surfaced on the button itself.
         this.runStore.clear();
+        this.enterImmersive();
         this.startRun(options);
       },
       savedRun: () => this.runStore.load(),
       continueRun: () => {
         const saved = this.runStore.load();
-        if (saved) this.resumeRun(saved);
+        if (!saved) return;
+        this.enterImmersive();
+        this.resumeRun(saved);
       },
       refresh: () => {
         this.uiDirty = true;
@@ -390,6 +512,11 @@ export class Game {
         this.returnScreen = 'menu';
         this.setScreen('unlocks');
       },
+      openCareer: () => {
+        this.returnScreen = 'menu';
+        this.setScreen('career');
+      },
+      touch: () => this.layout.touch,
       openJournal: () => {
         this.returnScreen = this.screen === 'pause' ? 'pause' : 'menu';
         this.setScreen('journal');
@@ -410,7 +537,10 @@ export class Game {
       abandonRun: () => this.abandonRun(),
       suspendRun: () => this.suspendToMenu(),
       resume: () => this.setScreen('playing'),
-      startNewRun: () => this.startRun({ ballId: this.draft.ballId, boundLevel: this.draft.boundLevel }),
+      startNewRun: () => {
+        this.enterImmersive();
+        this.startRun({ ballId: this.draft.ballId, boundLevel: this.draft.boundLevel });
+      },
       openMenu: () => this.returnToMenu(),
       openSettings: () => {
         this.returnScreen = 'pause';
@@ -420,6 +550,15 @@ export class Game {
         this.returnScreen = 'pause';
         this.setScreen('journal');
       },
+      openCareer: () => {
+        this.run?.dispose();
+        this.run = null;
+        this.profile.flush();
+        this.returnScreen = 'menu';
+        this.setScreen('career');
+        this.invalidateUi();
+      },
+      touch: this.layout.touch,
     };
 
     switch (this.screen) {
@@ -428,6 +567,9 @@ export class Game {
         break;
       case 'unlocks':
         renderUnlocks(this.overlay, menuHost);
+        break;
+      case 'career':
+        renderCareer(this.overlay, menuHost);
         break;
       case 'journal':
         renderJournal(this.overlay, menuHost);
@@ -473,7 +615,7 @@ export class Game {
         if (this.screen === 'playing') this.setScreen('pause');
         else if (this.screen === 'pause') this.setScreen('playing');
         else if (this.screen === 'build') this.setScreen('playing');
-        else if (this.screen === 'settings' || this.screen === 'journal' || this.screen === 'unlocks') {
+        else if (this.screen === 'settings' || this.screen === 'journal' || this.screen === 'unlocks' || this.screen === 'career') {
           this.setScreen(this.returnScreen);
         } else if (this.screen === 'results') this.returnToMenu();
         break;
@@ -655,6 +797,7 @@ export class Game {
     this.audio.updateSettings(settings);
     this.input.updateSettings(settings);
     this.applyInterfacePreferences();
+    this.relayout();
     this.profile.flush();
   }
 

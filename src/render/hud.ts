@@ -41,6 +41,56 @@ export interface HudContext {
   world: World;
   time: number;
   fps: number;
+  /** Screen layout; without one the HUD assumes a desktop window. */
+  layout?: HudLayout;
+}
+
+/**
+ * Where the HUD may draw, in CSS pixels. Phones need all of it: the safe area
+ * keeps the bars out of the notch, `arena` lets combo, banners and callouts sit on
+ * the play area rather than the screen, `compact` shrinks everything for a small
+ * screen, and `topRightReserve` leaves room for the touch pause and build buttons.
+ */
+export interface HudLayout {
+  arena: { x: number; y: number; w: number; h: number };
+  safe: { top: number; right: number; bottom: number; left: number };
+  compact: boolean;
+  touch: boolean;
+  portrait: boolean;
+  topRightReserve: number;
+}
+
+/** The layout in the HUD's own (interface-scaled) units. */
+interface Frame {
+  arena: { x: number; y: number; w: number; h: number };
+  safe: { top: number; right: number; bottom: number; left: number };
+  compact: boolean;
+  touch: boolean;
+  portrait: boolean;
+  reserve: number;
+}
+
+function frameOf(hud: HudContext, width: number, height: number): Frame {
+  const k = 1 / hud.settings.uiScale;
+  const layout = hud.layout;
+  if (!layout) {
+    return {
+      arena: { x: 0, y: 0, w: width, h: height },
+      safe: { top: 0, right: 0, bottom: 0, left: 0 },
+      compact: false,
+      touch: false,
+      portrait: false,
+      reserve: 0,
+    };
+  }
+  return {
+    arena: { x: layout.arena.x * k, y: layout.arena.y * k, w: layout.arena.w * k, h: layout.arena.h * k },
+    safe: { top: layout.safe.top * k, right: layout.safe.right * k, bottom: layout.safe.bottom * k, left: layout.safe.left * k },
+    compact: layout.compact,
+    touch: layout.touch,
+    portrait: layout.portrait,
+    reserve: layout.topRightReserve * k,
+  };
 }
 
 const FONT = UI_FONT;
@@ -107,15 +157,16 @@ export function drawHud(hud: HudContext): void {
   const scaledWidth = hud.width / settings.uiScale;
   const scaledHeight = hud.height / settings.uiScale;
   ctx.textBaseline = 'alphabetic';
+  const frame = frameOf(hud, scaledWidth, scaledHeight);
 
   drawLowHealthWarning(hud, scaledWidth, scaledHeight);
-  drawIntegrity(hud, state);
-  drawResources(hud, state, scaledWidth);
-  drawCombo(hud, state, scaledWidth);
-  drawBuildStrip(hud, scaledHeight);
-  drawRoomBanner(hud, scaledWidth);
-  drawBossBar(hud, state, scaledWidth);
-  drawNotifications(hud, scaledWidth, scaledHeight);
+  drawIntegrity(hud, state, frame);
+  drawResources(hud, state, scaledWidth, frame);
+  drawCombo(hud, state, frame);
+  drawBuildStrip(hud, scaledWidth, scaledHeight, frame);
+  drawRoomBanner(hud, frame);
+  drawBossBar(hud, state, scaledWidth, frame);
+  drawNotifications(hud, frame);
   if (settings.showFps) drawDiagnostics(hud, scaledWidth, scaledHeight);
 
   ctx.restore();
@@ -137,7 +188,7 @@ function slant(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h
   ctx.closePath();
 }
 
-function drawIntegrity(hud: HudContext, state: HudState): void {
+function drawIntegrity(hud: HudContext, state: HudState, frame: Frame): void {
   const { ctx, palette, world, time } = hud;
   const ball = world.ball;
   const dt = state.dt;
@@ -156,21 +207,22 @@ function drawIntegrity(hud: HudContext, state: HudState): void {
   const ghost = clamp01(state.ghostHp / ball.maxHp);
   const critical = fraction <= 0.3 && ball.alive;
 
-  let x = 22;
-  let y = 20;
+  const compact = frame.compact;
+  let x = (compact ? 14 : 22) + frame.safe.left;
+  let y = (compact ? 13 : 20) + frame.safe.top;
   if (motionOn(hud) && state.hurt > 0) {
     const k = state.hurt / 0.35;
     x += Math.sin(time * 90) * 5 * k;
     y += Math.cos(time * 77) * 3 * k;
   }
-  const w = 250;
-  const h = 18;
-  const skew = 7;
+  const w = compact ? 150 : 250;
+  const h = compact ? 13 : 18;
+  const skew = compact ? 5 : 7;
 
   // Plate
   ctx.save();
   ctx.fillStyle = 'rgba(6,8,14,0.72)';
-  slant(ctx, x - 8, y - 7, w + 60, h + 14, skew + 2);
+  slant(ctx, x - 8, y - 7, w + (compact ? 50 : 60), h + 14, skew + 2);
   ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.08)';
   ctx.lineWidth = 1;
@@ -227,22 +279,23 @@ function drawIntegrity(hud: HudContext, state: HudState): void {
 
   // Readout, right of the bar.
   ctx.textAlign = 'left';
-  ctx.font = `17px ${DISPLAY_FONT}`;
+  ctx.font = `${compact ? 14 : 17}px ${DISPLAY_FONT}`;
   ctx.lineWidth = 3;
   ctx.lineJoin = 'round';
   ctx.strokeStyle = 'rgba(6,8,14,0.9)';
   const hpText = `${Math.ceil(ball.hp)}`;
-  ctx.strokeText(hpText, x + w + 14, y + h - 1);
+  const readX = x + w + (compact ? 10 : 14);
+  ctx.strokeText(hpText, readX, y + h - 1);
   ctx.fillStyle = critical ? palette.danger : '#ffffff';
-  ctx.fillText(hpText, x + w + 14, y + h - 1);
+  ctx.fillText(hpText, readX, y + h - 1);
   const hpWidth = ctx.measureText(hpText).width;
-  ctx.font = `600 10px ${FONT}`;
+  ctx.font = `600 ${compact ? 9 : 10}px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.5)';
-  ctx.fillText(`/${Math.round(ball.maxHp)}`, x + w + 16 + hpWidth, y + h - 2);
+  ctx.fillText(`/${Math.round(ball.maxHp)}`, readX + 2 + hpWidth, y + h - 2);
 
   // Shields and revives sit under the bar as discrete pips: a countable resource.
   let pipX = x + 8;
-  const pipY = y + h + 13;
+  const pipY = y + h + (compact ? 11 : 13);
   for (let i = 0; i < Math.min(10, ball.shield); i++) {
     hexagon(ctx, pipX, pipY, 5.5);
     ctx.fillStyle = palette.shield;
@@ -284,7 +337,7 @@ function hexagon(ctx: CanvasRenderingContext2D, x: number, y: number, r: number)
  * shifts colour with each tier, announces a new tier, and its decay bar - the
  * actionable part - jitters when it is about to run out.
  */
-function drawCombo(hud: HudContext, state: HudState, width: number): void {
+function drawCombo(hud: HudContext, state: HudState, frame: Frame): void {
   const { ctx, world, palette, run, time } = hud;
   const combo = world.combo;
   const dt = state.dt;
@@ -301,15 +354,18 @@ function drawCombo(hud: HudContext, state: HudState, width: number): void {
   const multiplier = comboMultiplier(combo, stats);
   const fill = comboFill(combo);
   const motion = motionOn(hud);
-  const x = width - 26;
-  const y = 128;
+  const compact = frame.compact;
+  const x = frame.arena.x + frame.arena.w - (compact ? 14 : 26) - (frame.portrait ? 0 : frame.safe.right);
+  // Below the shard panel on a desktop; inside the arena's top corner on a phone,
+  // where the top of the screen belongs to the integrity bar and touch buttons.
+  const y = compact ? frame.arena.y + (frame.portrait ? 52 : 96) : 128;
   const color = tier >= 4 ? palette.crit : tier >= 2 ? palette.combo : lighten(palette.combo, 0.35);
 
   ctx.save();
   ctx.translate(x, y);
   ctx.rotate(-0.07);
   const pop = motion ? 1 + easeOutCubic(state.comboPop) * 0.28 : 1;
-  const size = 30 + tier * 5;
+  const size = compact ? 22 + tier * 3 : 30 + tier * 5;
   ctx.scale(pop, pop);
 
   ctx.textAlign = 'right';
@@ -359,7 +415,7 @@ function drawCombo(hud: HudContext, state: HudState, width: number): void {
   }
 
   // The decay bar is the actionable part: it says how long you have.
-  const barW = 140;
+  const barW = compact ? 92 : 140;
   const barY = y + 25;
   const urgent = fill < 0.3;
   const jitter = urgent && motion ? Math.sin(time * 60) * 1.5 : 0;
@@ -384,7 +440,7 @@ function drawCombo(hud: HudContext, state: HudState, width: number): void {
   ctx.restore();
 }
 
-function drawResources(hud: HudContext, state: HudState, width: number): void {
+function drawResources(hud: HudContext, state: HudState, width: number, frame: Frame): void {
   const { ctx, palette, run } = hud;
   const dt = state.dt;
   if (run.shards > state.lastShards) state.shardPop = 1;
@@ -395,11 +451,19 @@ function drawResources(hud: HudContext, state: HudState, width: number): void {
   if (Math.abs(run.shards - state.shardsShown) < 0.5) state.shardsShown = run.shards;
   state.shardPop = Math.max(0, state.shardPop - dt * 6);
 
-  const x = width - 24;
-  const y = 38;
+  const compact = frame.compact;
+  // A portrait phone is too narrow for two corner panels plus the touch buttons,
+  // so the shards and depth drop to one line under the integrity bar instead.
+  if (frame.portrait && frame.touch) {
+    drawResourceLine(hud, state, frame);
+    return;
+  }
+  const x = width - (compact ? 14 : 24) - frame.safe.right - frame.reserve;
+  const y = (compact ? 30 : 38) + frame.safe.top;
   ctx.save();
   ctx.fillStyle = 'rgba(6,8,14,0.72)';
-  slant(ctx, x - 150, y - 25, 160, 58, 8);
+  if (compact) slant(ctx, x - 122, y - 20, 130, 44, 6);
+  else slant(ctx, x - 150, y - 25, 160, 58, 8);
   ctx.fill();
 
   const pop = motionOn(hud) ? 1 + state.shardPop * 0.22 : 1;
@@ -407,7 +471,7 @@ function drawResources(hud: HudContext, state: HudState, width: number): void {
   ctx.save();
   ctx.translate(x, y);
   ctx.scale(pop, pop);
-  ctx.font = `22px ${DISPLAY_FONT}`;
+  ctx.font = `${compact ? 17 : 22}px ${DISPLAY_FONT}`;
   ctx.lineWidth = 3.5;
   ctx.lineJoin = 'round';
   ctx.strokeStyle = 'rgba(6,8,14,0.9)';
@@ -435,16 +499,59 @@ function drawResources(hud: HudContext, state: HudState, width: number): void {
   ctx.fill();
   ctx.restore();
 
-  ctx.font = `700 10px ${FONT}`;
+  ctx.font = `700 ${compact ? 9 : 10}px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
   const act = run.currentAct();
   const line = [`DEPTH ${act.tier + 1}/${run.map.tiers}`, `ROOM ${run.currentNode.layer + 1}/${act.layers}`];
-  if (run.rerollsLeft > 0) line.push(`${run.rerollsLeft} REROLL${run.rerollsLeft > 1 ? 'S' : ''}`);
-  ctx.fillText(line.join('  ·  '), x, y + 18);
+  // Rerolls are shown on the reward screen too; a small screen drops them here.
+  if (run.rerollsLeft > 0 && !compact) line.push(`${run.rerollsLeft} REROLL${run.rerollsLeft > 1 ? 'S' : ''}`);
+  ctx.fillText(line.join(compact ? ' · ' : '  ·  '), x, y + (compact ? 15 : 18));
   if (run.bound.level > 0) {
     ctx.fillStyle = palette.danger;
-    ctx.fillText(boundName(run.bound.level).toUpperCase(), x, y + 44);
+    ctx.fillText(boundName(run.bound.level).toUpperCase(), x, y + (compact ? 34 : 44));
   }
+  ctx.restore();
+}
+
+/** Shards, depth and room as a single left-aligned line, for portrait phones. */
+function drawResourceLine(hud: HudContext, state: HudState, frame: Frame): void {
+  const { ctx, palette, run } = hud;
+  const x = frame.safe.left + 16;
+  const y = frame.safe.top + 60;
+  const pop = motionOn(hud) ? 1 + state.shardPop * 0.22 : 1;
+  ctx.save();
+  ctx.textAlign = 'left';
+  ctx.lineJoin = 'round';
+  // Shard glyph, then the count.
+  ctx.fillStyle = palette.reward;
+  ctx.beginPath();
+  ctx.moveTo(x + 5, y - 13);
+  ctx.lineTo(x + 10, y - 6);
+  ctx.lineTo(x + 5, y + 1);
+  ctx.lineTo(x, y - 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.save();
+  ctx.translate(x + 15, y);
+  ctx.scale(pop, pop);
+  ctx.font = `16px ${DISPLAY_FONT}`;
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(6,8,14,0.9)';
+  const value = formatNumber(Math.round(state.shardsShown));
+  ctx.strokeText(value, 0, 0);
+  ctx.fillText(value, 0, 0);
+  const vw = ctx.measureText(value).width;
+  ctx.restore();
+  const act = run.currentAct();
+  const parts = [`DEPTH ${act.tier + 1}/${run.map.tiers}`, `ROOM ${run.currentNode.layer + 1}/${act.layers}`];
+  if (run.bound.level > 0) parts.push(boundName(run.bound.level).toUpperCase());
+  ctx.font = `700 9px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.strokeStyle = 'rgba(6,8,14,0.85)';
+  ctx.lineWidth = 3;
+  const line = parts.join(' · ');
+  ctx.strokeText(line, x + 24 + vw, y - 1);
+  ctx.fillText(line, x + 24 + vw, y - 1);
   ctx.restore();
 }
 
@@ -455,21 +562,28 @@ function drawResources(hud: HudContext, state: HudState, width: number): void {
  * player can see *shape* of their build at a glance - mostly impact, two defensive
  * picks, one transformation - and press Tab for the detail.
  */
-function drawBuildStrip(hud: HudContext, height: number): void {
+function drawBuildStrip(hud: HudContext, width: number, height: number, frame: Frame): void {
   const { ctx, run } = hud;
   const upgrades = run.build.list();
   if (upgrades.length === 0) return;
 
-  const x = 22;
-  const y = height - 30;
-  const size = 16;
-  const gap = 5;
+  // Desktop: bottom-left. Touch: the bottom belongs to the thumbs, so the strip
+  // sits just under the arena in portrait and under the integrity bar otherwise.
+  const size = frame.compact ? 13 : 16;
+  const gap = frame.compact ? 4 : 5;
+  const x = (frame.compact ? 14 : 22) + frame.safe.left;
+  const y = !frame.touch
+    ? height - 30 - frame.safe.bottom
+    : frame.portrait
+      ? frame.arena.y + frame.arena.h + 10
+      : frame.safe.top + (frame.compact ? 52 : 62);
+  const maxX = frame.touch && !frame.portrait ? width * 0.42 : width - 60;
 
   ctx.save();
   ctx.textAlign = 'center';
   for (const [index, entry] of upgrades.entries()) {
     const cx = x + index * (size + gap);
-    if (cx > hud.width - 60) break;
+    if (cx > maxX) break;
     const colour = familyColour(entry.def.family);
     ctx.fillStyle = 'rgba(6,8,14,0.7)';
     diamond(ctx, cx + size / 2, y + size / 2 + 1.5, size * 0.66);
@@ -498,8 +612,10 @@ function drawBuildStrip(hud: HudContext, height: number): void {
   const parts: string[] = [];
   if (identity.length > 0) parts.push(identity.map((i) => i.name.toUpperCase()).join(' / '));
   if (synergies.length > 0) parts.push(`${synergies.length} SYNERG${synergies.length > 1 ? 'IES' : 'Y'}`);
-  parts.push('TAB FOR BUILD');
-  ctx.fillText(parts.join('  ·  '), x, y - 9);
+  // The key prompt only makes sense with a keyboard; touch has a build button.
+  if (!frame.touch) parts.push('TAB FOR BUILD');
+  const labelY = frame.touch ? y + size + 12 : y - 9;
+  if (parts.length > 0) ctx.fillText(parts.join('  ·  '), x, labelY);
   ctx.restore();
 }
 
@@ -516,7 +632,7 @@ function diamond(ctx: CanvasRenderingContext2D, x: number, y: number, r: number)
  * Room title card: two rules draw outward from the centre, the room type rises
  * into place between them, and the whole card dissolves after three seconds.
  */
-function drawRoomBanner(hud: HudContext, width: number): void {
+function drawRoomBanner(hud: HudContext, frame: Frame): void {
   const { ctx, run, world, palette } = hud;
   // Only for the first few seconds: after that it is clutter.
   const age = world.roomTime;
@@ -527,16 +643,18 @@ function drawRoomBanner(hud: HudContext, width: number): void {
   const opacity = clamp01(inT) * (1 - out);
   if (opacity <= 0) return;
 
-  const cx = width / 2;
-  const y = 46;
+  const compact = frame.compact;
+  const cx = frame.arena.x + frame.arena.w / 2;
+  // On a phone the banner sits inside the arena, clear of the corner HUD.
+  const y = compact ? frame.arena.y + (frame.portrait ? 30 : 40) : 46;
   const label = (ARCHETYPE_LABELS[run.currentRoom.archetype] ?? run.currentRoom.archetype).toUpperCase();
   ctx.save();
   ctx.globalAlpha = opacity;
   ctx.textAlign = 'center';
-  ctx.font = `26px ${DISPLAY_FONT}`;
+  ctx.font = `${compact ? 18 : 26}px ${DISPLAY_FONT}`;
   const spaced = label.split('').join(' ');
   const tw = ctx.measureText(spaced).width;
-  const rule = (tw / 2 + 90) * inT;
+  const rule = (tw / 2 + (compact ? 40 : 90)) * inT;
   const rise = motion ? (1 - inT) * 12 : 0;
 
   ctx.strokeStyle = alpha(palette.perfect, 0.7);
@@ -554,16 +672,17 @@ function drawRoomBanner(hud: HudContext, width: number): void {
   ctx.strokeText(spaced, cx, y + rise);
   ctx.fillStyle = '#ffffff';
   ctx.fillText(spaced, cx, y + rise);
-  ctx.font = `600 12px ${FONT}`;
+  ctx.font = `600 ${compact ? 10 : 12}px ${FONT}`;
   ctx.fillStyle = palette.neutral;
   ctx.lineWidth = 3;
   const sub = run.currentRoom.templateName.toUpperCase();
-  ctx.strokeText(sub, cx, y + 20 + rise * 1.5);
-  ctx.fillText(sub, cx, y + 20 + rise * 1.5);
+  const subY = y + (compact ? 15 : 20) + rise * 1.5;
+  ctx.strokeText(sub, cx, subY);
+  ctx.fillText(sub, cx, subY);
   ctx.restore();
 }
 
-function drawBossBar(hud: HudContext, state: HudState, width: number): void {
+function drawBossBar(hud: HudContext, state: HudState, width: number, frame: Frame): void {
   const { ctx, world, palette, time } = hud;
   const info = bossBarInfo(world);
   if (!info) {
@@ -582,10 +701,18 @@ function drawBossBar(hud: HudContext, state: HudState, width: number): void {
   else state.bossGhost = damp(state.bossGhost, info.fraction, 4, dt);
   state.bossHurt = Math.max(0, state.bossHurt - dt);
 
-  const w = Math.min(600, width - 140);
-  let x = (width - w) / 2;
+  const compact = frame.compact;
+  // Between the corner panels on a small landscape screen, across the arena in
+  // portrait, and wide and centred on a desktop.
+  const w = !compact
+    ? Math.min(600, width - 140)
+    : frame.portrait
+      ? frame.arena.w - 44
+      : clamp(width - 540, 200, 420);
+  const centre = compact ? frame.arena.x + frame.arena.w / 2 : width / 2;
+  let x = centre - w / 2;
   // Sits below the room title card, which shares the top centre for three seconds.
-  const y = 104;
+  const y = !compact ? 104 : frame.portrait ? frame.arena.y + 70 : frame.safe.top + 84;
   if (motionOn(hud) && state.bossHurt > 0) x += Math.sin(time * 80) * 3 * (state.bossHurt / 0.2);
   const skew = 8;
 
@@ -598,14 +725,14 @@ function drawBossBar(hud: HudContext, state: HudState, width: number): void {
   ctx.stroke();
 
   ctx.textAlign = 'center';
-  ctx.font = `18px ${DISPLAY_FONT}`;
+  ctx.font = `${compact ? 14 : 18}px ${DISPLAY_FONT}`;
   ctx.lineJoin = 'round';
   ctx.lineWidth = 4;
   ctx.strokeStyle = 'rgba(6,8,14,0.9)';
   const name = info.name.toUpperCase();
-  ctx.strokeText(name, width / 2, y - 9);
+  ctx.strokeText(name, centre, y - 9);
   ctx.fillStyle = '#ffffff';
-  ctx.fillText(name, width / 2, y - 9);
+  ctx.fillText(name, centre, y - 9);
 
   ctx.fillStyle = 'rgba(255,255,255,0.08)';
   slant(ctx, x, y, w, 10, skew);
@@ -627,12 +754,12 @@ function drawBossBar(hud: HudContext, state: HudState, width: number): void {
   if (info.phase) {
     ctx.font = `700 10px ${FONT}`;
     ctx.fillStyle = palette.neutral;
-    ctx.fillText(info.phase.toUpperCase().split('').join(' '), width / 2, y + 23);
+    ctx.fillText(info.phase.toUpperCase().split('').join(' '), centre, y + 23);
   }
   ctx.restore();
 }
 
-function drawNotifications(hud: HudContext, width: number, height: number): void {
+function drawNotifications(hud: HudContext, frame: Frame): void {
   const { ctx, run, palette } = hud;
   const now = Date.now();
   const recent = run.notifications.filter((n) => now - n.at < 3400).slice(-4);
@@ -654,11 +781,11 @@ function drawNotifications(hud: HudContext, width: number, height: number): void
           : rare
             ? palette.reward
             : '#ffffff';
-    const y = height * 0.28 + index * 26 - lerp(0, 10, age);
+    const y = frame.arena.y + frame.arena.h * 0.28 + index * (frame.compact ? 20 : 26) - lerp(0, 10, age);
     ctx.save();
-    ctx.translate(width / 2, y);
+    ctx.translate(frame.arena.x + frame.arena.w / 2, y);
     ctx.scale(pop, pop);
-    ctx.font = rare ? `20px ${DISPLAY_FONT}` : `700 15px ${FONT}`;
+    ctx.font = frame.compact ? (rare ? `15px ${DISPLAY_FONT}` : `700 12px ${FONT}`) : rare ? `20px ${DISPLAY_FONT}` : `700 15px ${FONT}`;
     ctx.lineWidth = 4;
     ctx.strokeStyle = 'rgba(6,8,14,0.85)';
     ctx.strokeText(notification.text, 0, 0);
@@ -770,18 +897,26 @@ export function drawControlHints(
   learned: { steer: boolean; bounce: boolean; dive: boolean },
 ): void {
   const { ctx, width, height, settings, time } = hud;
-  const hints: Array<[boolean, string, string]> = [
-    [learned.steer, 'A / D', 'steer while airborne'],
-    [learned.bounce, 'SPACE', 'just before contact for a perfect bounce'],
-    [learned.dive, 'S', 'dive to hit harder'],
-  ];
+  const touch = hud.layout?.touch ?? false;
+  // The same three lessons, in the vocabulary of whichever controls are showing.
+  const hints: Array<[boolean, string, string]> = touch
+    ? [
+        [learned.steer, 'STICK', 'drag to steer while airborne'],
+        [learned.bounce, 'BOUNCE', 'tap just before contact'],
+        [learned.dive, 'PULL DOWN', 'on the stick to dive'],
+      ]
+    : [
+        [learned.steer, 'A / D', 'steer while airborne'],
+        [learned.bounce, 'SPACE', 'just before contact for a perfect bounce'],
+        [learned.dive, 'S', 'dive to hit harder'],
+      ];
   if (hints.every(([done]) => done)) return;
 
   ctx.save();
   ctx.scale(settings.uiScale, settings.uiScale);
-  const scaledWidth = width / settings.uiScale;
-  const scaledHeight = height / settings.uiScale;
-  let y = scaledHeight * 0.6;
+  const frame = frameOf(hud, width / settings.uiScale, height / settings.uiScale);
+  const centreX = frame.arena.x + frame.arena.w / 2;
+  let y = frame.arena.y + frame.arena.h * (frame.compact ? 0.5 : 0.6);
   const bob = settings.reducedMotion ? 0 : Math.sin(time * 3) * 2;
   for (const [done, key, text] of hints) {
     if (done) continue;
@@ -790,7 +925,7 @@ export function drawControlHints(
     ctx.font = `600 14px ${FONT}`;
     const tw = ctx.measureText(text).width;
     const total = kw + 10 + tw;
-    const left = scaledWidth / 2 - total / 2;
+    const left = Math.max(frame.arena.x + 6, centreX - total / 2);
 
     // Key cap: a raised face over a darker base.
     ctx.fillStyle = 'rgba(6,8,14,0.85)';
@@ -812,7 +947,7 @@ export function drawControlHints(
     ctx.strokeText(text, left + kw + 10, y - 2);
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.fillText(text, left + kw + 10, y - 2);
-    y += 32;
+    y += frame.compact ? 28 : 32;
   }
   ctx.restore();
 }

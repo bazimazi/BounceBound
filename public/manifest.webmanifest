@@ -1,0 +1,11 @@
+{
+  "name": "Bouncebound",
+  "short_name": "Bouncebound",
+  "description": "A physics roguelite where bouncing is the combat system.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#070910",
+  "theme_color": "#070910"
+}

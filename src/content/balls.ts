@@ -206,7 +206,7 @@ export const BALL_CLASSES: BallClassDef[] = [
     color: '#ffe0f0',
     accent: '#ff7ab0',
     unlock: 'ball_glass',
-    unlockHint: 'Finish a run without ever being reduced below half integrity.',
+    unlockHint: 'Defeat a boss without taking any damage.',
   },
 ];
 

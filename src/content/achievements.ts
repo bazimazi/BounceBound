@@ -302,6 +302,53 @@ export const ACHIEVEMENT_DEFS: AchievementDef[] = [
     echoes: 80,
   },
 
+  /* ----------------------------------------------------------------- career -- */
+  {
+    id: 'rank_5',
+    name: 'Seasoned',
+    description: 'Reach career rank 5.',
+    kind: 'run',
+    counter: 'careerRank',
+    target: 5,
+    echoes: 10,
+  },
+  {
+    id: 'rank_15',
+    name: 'Veteran',
+    description: 'Reach career rank 15.',
+    kind: 'run',
+    counter: 'careerRank',
+    target: 15,
+    echoes: 30,
+  },
+  {
+    id: 'contracts_10',
+    name: 'Under Contract',
+    description: 'Complete 10 daily contracts.',
+    kind: 'discovery',
+    counter: 'contractsCompleted',
+    target: 10,
+    echoes: 20,
+  },
+  {
+    id: 'mastery_3',
+    name: 'Practised Hand',
+    description: 'Reach mastery tier 3 with any ball.',
+    kind: 'mastery',
+    counter: 'bestMastery',
+    target: 3,
+    echoes: 15,
+  },
+  {
+    id: 'versatile',
+    name: 'Versatile',
+    description: 'Complete a run with three different balls.',
+    kind: 'challenge',
+    counter: 'ballsWon',
+    target: 3,
+    echoes: 35,
+  },
+
   /* ----------------------------------------------------------------- secret -- */
   {
     id: 'secret_hollow',

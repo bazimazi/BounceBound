@@ -17,7 +17,7 @@
 
 import type { StatModifiers } from '../sim/stats';
 
-export type UnlockBranch = 'core' | 'abilities' | 'world' | 'adversaries' | 'trials' | 'secrets';
+export type UnlockBranch = 'core' | 'abilities' | 'world' | 'adversaries' | 'trials' | 'reliquary' | 'secrets';
 
 export interface UnlockNode {
   id: string;
@@ -26,6 +26,11 @@ export interface UnlockNode {
   description: string;
   branch: UnlockBranch;
   cost: number;
+  /**
+   * What the node is paid in. Echoes by default; the Reliquary is paid in relics,
+   * which are rarer and come from Wardens, contracts and the career track.
+   */
+  currency?: 'echoes' | 'relics';
   /** Prerequisite node ids. */
   requires: string[];
   /** Permanent stat bonuses applied at the start of every run. */
@@ -282,6 +287,50 @@ export const UNLOCK_NODES: UnlockNode[] = [
     planned: true,
   },
 
+  /* ------------------------------------------------------------- reliquary -- */
+  // Paid in relics rather than echoes. Before this branch existed relics were
+  // banked at the end of every run and then never used for anything.
+  {
+    id: 'relic_opening',
+    name: 'Opening Hand',
+    description: 'Every run opens with an upgrade offer before the first room.',
+    branch: 'reliquary',
+    currency: 'relics',
+    cost: 2,
+    requires: [],
+    grants: ['opening_hand'],
+  },
+  {
+    id: 'relic_salvage',
+    name: 'Salvage Rights',
+    description: 'Skipping an upgrade offer pays half again as many shards.',
+    branch: 'reliquary',
+    currency: 'relics',
+    cost: 2,
+    requires: [],
+    grants: ['salvage_rights'],
+  },
+  {
+    id: 'relic_keepsake',
+    name: 'Keepsake',
+    description: 'Start every run with one shield charge already raised.',
+    branch: 'reliquary',
+    currency: 'relics',
+    cost: 3,
+    requires: ['relic_opening'],
+    modifiers: { shieldCharges: 1 },
+  },
+  {
+    id: 'relic_attunement',
+    name: 'Attunement',
+    description: 'The Opening Hand is dealt from the rarer end of the catalogue.',
+    branch: 'reliquary',
+    currency: 'relics',
+    cost: 4,
+    requires: ['relic_opening'],
+    grants: ['opening_attuned'],
+  },
+
   /* --------------------------------------------------------------- secrets -- */
   {
     id: 'secret_resonance',
@@ -315,6 +364,7 @@ export const BRANCH_NAMES: Record<UnlockBranch, string> = {
   world: 'World',
   adversaries: 'Adversaries',
   trials: 'Trials',
+  reliquary: 'Reliquary',
   secrets: 'Secrets',
 };
 
@@ -323,6 +373,10 @@ export function nodeCost(node: UnlockNode, ranksOwned: number): number {
   if (ranksOwned <= 0) return node.cost;
   const scale = node.rankCostScale ?? 1.5;
   return Math.round(node.cost * scale ** ranksOwned);
+}
+
+export function nodeCurrency(node: UnlockNode): 'echoes' | 'relics' {
+  return node.currency ?? 'echoes';
 }
 
 export function maxRanks(node: UnlockNode): number {

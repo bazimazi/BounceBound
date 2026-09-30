@@ -21,12 +21,22 @@ import { BOSS_DEFS } from '../content/bosses';
 import { EVENT_DEFS } from '../content/events';
 import { SYNERGY_DEFS } from '../content/synergies';
 import { BOUND_MODIFIERS, boundName } from '../content/modifiers';
-import { BRANCH_NAMES, UNLOCK_NODES, maxRanks, nodeCost, type UnlockBranch } from '../content/unlocks';
+import { BRANCH_NAMES, UNLOCK_NODES, maxRanks, nodeCost, nodeCurrency, type UnlockBranch } from '../content/unlocks';
+import {
+  FINISHES,
+  MASTERY_NAMES,
+  describeReward,
+  finishSource,
+  masteryProgress,
+  rankReward,
+  xpToNextRank,
+} from '../content/career';
+import { CONTRACT_REWARDS, contractText, secondsUntilRollover } from '../content/contracts';
 import { upgradeCatalogue } from '../content/upgrades/index';
 import { RARITY_COLORS } from '../content/ids';
 import type { Profile } from '../meta/profile';
 import { describeSnapshot, type RunSnapshot } from '../run/runSave';
-import { defaultSettings, type ColorMode, type Settings, type TrajectoryMode } from '../meta/settings';
+import { defaultSettings, type ColorMode, type Settings, type TouchMode, type TrajectoryMode } from '../meta/settings';
 import { bar, button, el, formatDuration, row, section, select, slider, toggle } from './dom';
 
 export interface MenuHost {
@@ -40,10 +50,13 @@ export interface MenuHost {
   refresh: () => void;
   close: () => void;
   openUnlocks: () => void;
+  openCareer: () => void;
   openJournal: () => void;
   openSettings: () => void;
   openMenu: () => void;
   applySettings: (patch: Partial<Settings>) => void;
+  /** Whether the on-screen touch controls are in use, for control hints. */
+  touch: () => boolean;
   /** Current draft run configuration, persisted between visits. */
   draft: { seed: string; ballId: string; boundLevel: number };
 }
@@ -114,6 +127,8 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
         logo('BOUNCE', 'BOUND'),
         el('p', { text: 'The ball is the weapon. It never stops.' }),
       ]),
+
+      rankStrip(host),
 
       // Resuming comes first and is visually loudest: if a run is shelved, it is
       // almost always what the player came back for.
@@ -193,9 +208,9 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
             // rather than a footer so the lower screen stays open for the backdrop.
             el('div', { class: 'bb-gains bb-gains-compact' }, [
               statTile('Echoes', formatNumber(profile.balance('echoes'))),
+              statTile('Relics', formatNumber(profile.balance('relics'))),
               statTile('Runs', `${profile.counter('runsPlayed')}`),
               statTile('Wins', `${profile.counter('runsWon')}`),
-              statTile('Best combo', `${profile.counter('bestCombo')}`),
             ]),
             button({
               label: resume ? 'Begin new descent' : 'Begin descent',
@@ -213,6 +228,7 @@ export function renderMainMenu(root: HTMLElement, host: MenuHost): void {
               onHover: host.playHover,
             }),
             el('nav', { class: 'bb-menu-nav' }, [
+              button({ label: 'Career', onClick: () => { host.playClick(); host.openCareer(); }, onHover: host.playHover }),
               button({ label: 'Unlocks', onClick: () => { host.playClick(); host.openUnlocks(); }, onHover: host.playHover }),
               button({ label: 'Journal', onClick: () => { host.playClick(); host.openJournal(); }, onHover: host.playHover }),
               button({ label: 'Settings', onClick: () => { host.playClick(); host.openSettings(); }, onHover: host.playHover }),
@@ -256,6 +272,39 @@ function logo(first: string, second: string): HTMLElement {
   return el('h1', { class: 'bb-logo', ariaLabel: `${first}${second}` }, [word(first, 'bb-logo-a'), word(second, 'bb-logo-b')]);
 }
 
+/**
+ * Rank, title and the bar toward the next rank, directly under the logo. It is
+ * a button into the career screen, and it carries the day's open contracts,
+ * because "what can I do today" is the question it exists to answer.
+ */
+function rankStrip(host: MenuHost): HTMLElement {
+  const profile = host.profile;
+  const career = profile.career;
+  const open = profile.contractDay().contracts.filter((c) => !c.done).length;
+  const need = xpToNextRank(career.rank);
+  const node = el(
+    'button',
+    { class: 'bb-rank-strip', type: 'button', ariaLabel: `Career: rank ${career.rank}` },
+    [
+      el('span', { class: 'bb-rank-badge', text: `${career.rank}` }),
+      el('span', { class: 'bb-rank-body' }, [
+        el('span', { class: 'bb-rank-line' }, [
+          el('strong', { text: career.title || `Rank ${career.rank}` }),
+          el('small', { text: `${career.xp} / ${need} XP` }),
+        ]),
+        bar(career.xp / need, '#b9a0ff'),
+      ]),
+      open > 0 ? el('span', { class: 'bb-rank-contracts', text: `${open} contract${open > 1 ? 's' : ''}` }) : null,
+    ],
+  );
+  node.addEventListener('click', () => {
+    host.playClick();
+    host.openCareer();
+  });
+  node.addEventListener('mouseenter', host.playHover);
+  return node;
+}
+
 function statTile(label: string, value: string): HTMLElement {
   return el('div', { class: 'bb-gain' }, [
     el('span', { class: 'bb-gain-value', text: value }),
@@ -271,7 +320,7 @@ function getUpgradeName(id: string): string {
 
 export function renderUnlocks(root: HTMLElement, host: MenuHost): void {
   const profile = host.profile;
-  const branches: UnlockBranch[] = ['core', 'abilities', 'world', 'adversaries', 'trials', 'secrets'];
+  const branches: UnlockBranch[] = ['core', 'abilities', 'world', 'adversaries', 'trials', 'reliquary', 'secrets'];
 
   const columns = branches.map((branch) => {
     const nodes = UNLOCK_NODES.filter((node) => node.branch === branch).filter(
@@ -285,23 +334,27 @@ export function renderUnlocks(root: HTMLElement, host: MenuHost): void {
         const max = maxRanks(node);
         const check = profile.canPurchase(node);
         const owned = ranks >= max;
+        const relic = nodeCurrency(node) === 'relics';
+        const unit = relic ? (check.cost === 1 ? 'relic' : 'relics') : 'echoes';
         const card = el(
           'button',
           {
-            class: `bb-unlock${owned ? ' bb-unlock-owned' : check.ok ? ' bb-unlock-ready' : ' bb-unlock-locked'}`,
+            class: `bb-unlock${owned ? ' bb-unlock-owned' : check.ok ? ' bb-unlock-ready' : ' bb-unlock-locked'}${relic ? ' bb-unlock-relic' : ''}`,
             type: 'button',
-            disabled: owned || !check.ok,
+            // Not `disabled`: a disabled button swallows taps, and on a phone a tap
+            // is the only way to read why a node is locked (see installTapTips).
+            ariaDisabled: owned || !check.ok ? 'true' : undefined,
             title: `${node.description}${check.reason ? `\n\n${check.reason}` : ''}`,
           },
           [
             el('header', {}, [
               el('strong', { text: node.name }),
-              el('span', { text: max > 1 ? `${ranks}/${max}` : owned ? 'owned' : `${nodeCost(node, ranks)}` }),
+              el('span', { text: max > 1 ? `${ranks}/${max}` : owned ? 'owned' : `${nodeCost(node, ranks)}${relic ? ' ◇' : ''}` }),
             ]),
             // Description only when it is actually purchasable or owned; locked
             // nodes show a name and a cost, which is all the decision needs.
             check.ok || owned ? el('p', { text: node.description }) : null,
-            !owned ? el('small', { class: check.ok ? 'bb-good' : 'bb-bad', text: check.ok ? `${check.cost} echoes` : check.reason }) : null,
+            !owned ? el('small', { class: check.ok ? 'bb-good' : 'bb-bad', text: check.ok ? `${check.cost} ${unit}` : check.reason }) : null,
           ],
         );
         if (!owned && check.ok) {
@@ -324,7 +377,7 @@ export function renderUnlocks(root: HTMLElement, host: MenuHost): void {
         el('h2', { text: 'Unlocks' }),
         el('p', {
           class: 'bb-sub',
-          text: `${formatNumber(profile.balance('echoes'))} echoes. These widen what a run can be; they are not a power requirement.`,
+          text: `${formatNumber(profile.balance('echoes'))} echoes - ${formatNumber(profile.balance('relics'))} relics. These widen what a run can be; they are not a power requirement.`,
         }),
       ]),
       el('div', { class: 'bb-branches' }, columns.filter(Boolean) as Node[]),
@@ -443,6 +496,146 @@ function journalColumn(title: string, entries: HTMLElement[]): HTMLElement {
 
 function getBiomeName(id: string): string {
   return BIOME_DEFS.find((b) => b.id === id)?.name ?? id;
+}
+
+/* ------------------------------------------------------------------ career -- */
+
+const TIER_NAMES = ['Easy', 'Medium', 'Hard'];
+
+/**
+ * The career screen: rank and its reward track, today's contracts, mastery for
+ * every ball, and the cosmetics the career has paid out. It is the one place that
+ * answers "what have I been working toward, and what is next".
+ */
+export function renderCareer(root: HTMLElement, host: MenuHost): void {
+  const profile = host.profile;
+  const career = profile.career;
+  const need = xpToNextRank(career.rank);
+
+  // The next few ranks, so the track reads as a road rather than a single step.
+  const upcoming = [1, 2, 3, 4].map((offset) => {
+    const rank = career.rank + offset;
+    const reward = rankReward(rank);
+    return el('li', { class: `bb-track-step${reward.finish || reward.title ? ' bb-track-special' : ''}` }, [
+      el('span', { class: 'bb-track-rank', text: `${rank}` }),
+      el('span', { text: describeReward(reward) }),
+    ]);
+  });
+
+  const day = profile.contractDay();
+  const ballName = (id: string): string => getBallClass(id).name;
+  const contracts = day.contracts.map((contract) => {
+    const reward = CONTRACT_REWARDS[contract.tier] ?? CONTRACT_REWARDS[0];
+    const pay = [`${reward.echoes} echoes`, `${reward.xp} XP`, reward.relics ? `${reward.relics} relic` : ''].filter(Boolean).join(' - ');
+    return el('div', { class: `bb-contract${contract.done ? ' bb-contract-done' : ''}` }, [
+      el('div', { class: 'bb-contract-head' }, [
+        el('span', { class: `bb-contract-tier bb-tier-${contract.tier}`, text: TIER_NAMES[contract.tier] ?? '' }),
+        el('strong', { text: contractText(contract, ballName) }),
+      ]),
+      bar(contract.progress / contract.target, contract.done ? '#5ce8a0' : '#6aa8f0', `${contract.progress}/${contract.target}`),
+      el('small', { text: contract.done ? 'Complete' : pay }),
+    ]);
+  });
+  const hours = Math.floor(secondsUntilRollover() / 3600);
+  const minutes = Math.floor((secondsUntilRollover() % 3600) / 60);
+
+  const balls = BALL_CLASSES.filter((b) => !b.unlock || profile.isUnlocked(b.unlock));
+  const mastery = balls.map((ballClass) => {
+    const xp = profile.masteryOf(ballClass.id);
+    const progress = masteryProgress(xp);
+    return el('div', { class: 'bb-mastery', style: `--ball:${ballClass.color};--ball-accent:${ballClass.accent}` }, [
+      el('span', { class: 'bb-ball-orb', ariaHidden: 'true' }),
+      el('div', { class: 'bb-mastery-body' }, [
+        el('div', { class: 'bb-mastery-head' }, [
+          el('strong', { text: ballClass.name }),
+          el('small', { text: MASTERY_NAMES[progress.tier] ?? '' }),
+        ]),
+        el(
+          'div',
+          { class: 'bb-pips', ariaLabel: `Tier ${progress.tier} of 5` },
+          [0, 1, 2, 3, 4].map((i) => el('span', { class: `bb-pip${i < progress.tier ? ' bb-pip-on' : ''}` })),
+        ),
+        progress.span > 0 ? bar(progress.fraction, ballClass.accent, `${progress.into}/${progress.span}`) : null,
+      ]),
+    ]);
+  });
+
+  const titleChoices = [{ value: '', label: 'No title' }, ...career.titles.map((t) => ({ value: t, label: t }))];
+  const finishes = FINISHES.map((finish) => {
+    const owned = career.finishes.includes(finish.id);
+    const worn = career.finish === finish.id;
+    const swatch = el(
+      'button',
+      {
+        class: `bb-finish${worn ? ' bb-finish-worn' : ''}${owned ? '' : ' bb-finish-locked'}`,
+        type: 'button',
+        style: finish.color ? `--ball:${finish.color};--ball-accent:${finish.accent}` : undefined,
+        title: owned ? finish.name : `${finish.name} - ${finishSource(finish.id)}`,
+        ariaPressed: worn ? 'true' : 'false',
+        ariaDisabled: owned ? undefined : 'true',
+      },
+      [el('span', { class: 'bb-ball-orb', ariaHidden: 'true' }), el('small', { text: owned ? finish.name : '?' })],
+    );
+    if (owned) {
+      swatch.addEventListener('click', () => {
+        host.playClick();
+        profile.wearFinish(finish.id);
+        host.refresh();
+      });
+    }
+    return swatch;
+  });
+
+  root.append(
+    el('div', { class: 'bb-panel bb-panel-wide bb-panel-career' }, [
+      el('header', { class: 'bb-panel-head' }, [
+        el('h2', { text: 'Career' }),
+        el('p', {
+          class: 'bb-sub',
+          text: `Every run pays experience, won or lost. ${formatNumber(career.totalXp)} earned so far.`,
+        }),
+      ]),
+      el('div', { class: 'bb-career-grid' }, [
+        section(
+          'Rank',
+          [
+            el('div', { class: 'bb-career-rank' }, [
+              el('span', { class: 'bb-rank-badge bb-rank-badge-big', text: `${career.rank}` }),
+              el('div', {}, [
+                el('strong', { text: career.title || 'Untitled' }),
+                bar(career.xp / need, '#b9a0ff', `${career.xp}/${need}`),
+              ]),
+            ]),
+            el('ol', { class: 'bb-track' }, upcoming),
+          ],
+          'bb-career-card',
+        ),
+        section(
+          'Today',
+          [...contracts, el('p', { class: 'bb-note', text: `New contracts in ${hours}h ${`${minutes}`.padStart(2, '0')}m. Progress counts across every run today.` })],
+          'bb-career-card',
+        ),
+        section('Mastery', [el('div', { class: 'bb-masteries' }, mastery)], 'bb-career-card'),
+        section(
+          'Look',
+          [
+            select<string>({
+              label: 'Title',
+              value: career.title,
+              choices: titleChoices,
+              onChange: (title) => {
+                profile.wearTitle(title);
+                host.refresh();
+              },
+            }),
+            el('div', { class: 'bb-finishes' }, finishes),
+          ],
+          'bb-career-card',
+        ),
+      ]),
+      row([button({ label: 'Back', hint: 'Esc', onClick: () => { host.playClick(); host.openMenu(); } })], 'bb-row-end'),
+    ]),
+  );
 }
 
 /* ---------------------------------------------------------------- settings -- */
@@ -578,6 +771,49 @@ export function renderSettings(root: HTMLElement, host: MenuHost, inRun: boolean
           }),
           toggle({ label: 'Swap brake and dash', value: settings.swapBrakeDash, onChange: (swapBrakeDash) => apply({ swapBrakeDash }) }),
           toggle({ label: 'Controller vibration', value: settings.vibration, onChange: (vibration) => apply({ vibration }) }),
+        ]),
+
+        section('Touch', [
+          select<TouchMode>({
+            label: 'On-screen controls',
+            value: settings.touchControls,
+            choices: [
+              { value: 'auto', label: 'On touch devices (default)' },
+              { value: 'on', label: 'Always' },
+              { value: 'off', label: 'Never' },
+            ],
+            onChange: (touchControls) => apply({ touchControls }),
+          }),
+          slider({
+            label: 'Control size',
+            value: settings.touchScale,
+            min: 0.7,
+            max: 1.4,
+            step: 0.05,
+            format: (v) => `${Math.round(v * 100)}%`,
+            onChange: (touchScale) => apply({ touchScale }),
+          }),
+          slider({
+            label: 'Control opacity',
+            value: settings.touchOpacity,
+            min: 0.15,
+            max: 1,
+            step: 0.05,
+            format: (v) => `${Math.round(v * 100)}%`,
+            onChange: (touchOpacity) => apply({ touchOpacity }),
+          }),
+          toggle({
+            label: 'Stick on the right',
+            hint: 'Steer with the right thumb and bounce with the left',
+            value: settings.touchSwapSides,
+            onChange: (touchSwapSides) => apply({ touchSwapSides }),
+          }),
+          toggle({
+            label: 'Fullscreen on start',
+            hint: 'On phones and tablets, go fullscreen and landscape when a run starts',
+            value: settings.fullscreenOnStart,
+            onChange: (fullscreenOnStart) => apply({ fullscreenOnStart }),
+          }),
         ]),
 
         section('Audio', [

@@ -10,27 +10,46 @@ fully procedural WebAudio sound. No binary assets of any kind.
 ```bash
 npm install
 npm run dev        # play at the printed localhost URL
-npm test           # 134 tests
+npm test           # 164 tests
 npm run build      # typecheck + production bundle
 ```
 
 ## Controls
 
-| Action | Keyboard / Mouse | Controller |
-| --- | --- | --- |
-| Steer while airborne | `A` `D` / arrows | Left stick |
-| Dive (stay low, hit harder) | `S` / hold down | Left stick down |
-| **Bounce** | `Space` or `J` | `A` |
-| Air brake | `Shift` or `K` | `LB` |
-| Dash *(once unlocked)* | Right mouse or `L` | `RB` |
-| Aim | Mouse | Right stick |
-| Build panel | `Tab` | Select |
-| Pause | `Esc` | Start |
-| Debug overlay | `` ` `` | - |
+| Action | Keyboard / Mouse | Controller | Touch |
+| --- | --- | --- | --- |
+| Steer while airborne | `A` `D` / arrows | Left stick | Floating stick (left thumb) |
+| Dive (stay low, hit harder) | `S` / hold down | Left stick down | Pull the stick down |
+| **Bounce** | `Space` or `J` | `A` | Anywhere on the right half |
+| Air brake | `Shift` or `K` | `LB` | Brake button |
+| Dash *(once unlocked)* | Right mouse or `L` | `RB` | Dash button, aimed by the stick |
+| Aim | Mouse | Right stick | Stick direction |
+| Build panel | `Tab` | Select | Corner button |
+| Pause | `Esc` | Start | Corner button |
+| Debug overlay | `` ` `` | - | - |
 
 **Bounce is one button with two meanings**, resolved by how close a surface is.
 Near one it arms the Perfect Bounce window; far from one it spends an air-bounce
 charge. A player only ever learns "press to bounce".
+
+## Playing on a phone
+
+The game is fully playable on a phone in either orientation, and designed for
+landscape. On touch devices on-screen controls appear automatically (Settings >
+Touch can force them on or off, resize them, fade them, or put the stick on the
+right). The stick floats - it appears wherever the thumb lands - and the whole
+opposite half of the screen is the Bounce button apart from the smaller Brake and
+Dash buttons, because Bounce is the timing input and must never miss by a few
+pixels. Taps are latched, so a tap shorter than a frame still bounces.
+
+In portrait the arena sits at the top at full width and the controls get the
+space beneath it, so no thumb ever covers the play area; the HUD, room banners,
+boss bar and callouts are placed relative to the arena and inside the device's
+safe area (notches, rounded corners, home indicator). Starting a run on a touch
+device goes fullscreen and locks landscape where the browser allows it. Every
+menu has phone layouts for both orientations - the reward hand becomes a column
+of wide cards upright and one row of short cards sideways - and anything that was
+only a hover tooltip can be read by tapping it.
 
 ## The two mechanics everything else is built on
 
@@ -100,7 +119,9 @@ never touches progression.
 
 79 upgrades across seven families, 20 authored synergies, 19 enemies including
 three elites, three bosses with distinct mechanics, six biomes, nine ball classes,
-seven altar events, 28 unlock-tree nodes, 31 achievements, and 12 Bound levels.
+seven altar events, 30 unlock-tree nodes, 34 achievements, 12 Bound levels, a
+30-rank career track, five mastery tiers per ball, eleven contract types, and
+eight ball finishes.
 
 Each system follows one rule from the brief:
 
@@ -122,6 +143,36 @@ Each system follows one rule from the brief:
   fresh profile starts without transformations, evolutions, exotic physics,
   Specialists, Primes, Wardens or Hollows, and each arrives when its node is
   bought. Nodes whose content is not built yet are shown but cannot be bought.
+
+## Progression
+
+Two currencies and a career, each answering a different question.
+
+**Echoes** ("what can a run contain?") are earned by every run and spent in the
+unlock tree. **Relics** come from Wardens, hard contracts and the career track,
+and buy the **Reliquary** branch: Opening Hand (every run opens with an upgrade
+offer), Salvage Rights (skipping pays half again), Keepsake (start with a shield)
+and Attunement (the opening offer leans rare).
+
+**The career** ("am I getting anywhere?") moves after every run, including the
+ones that die in the second room:
+
+- **Rank.** Every run pays experience - rooms, elites, bosses, perfect bounces,
+  combo, a win - scaled by Bound. Each rank pays something on a fixed track
+  (echoes, relics, a title or a ball finish) for thirty ranks, then echoes forever.
+- **Mastery.** The same experience fills the played ball class's own five-tier
+  track, paying echoes, a relic, two titles and the Gilded finish, so each class
+  is worth playing past the run that unlocked it.
+- **Daily contracts.** Three objectives a day - easy, medium, hard - rolled from
+  the date so everyone gets the same three. Progress accumulates across all of the
+  day's runs, and the hard one pays a relic.
+- **Cosmetics.** Titles and ball finishes are chosen on the Career screen and
+  worn in play. None of the career is power: echoes and relics feed a tree with
+  its own ceiling, and everything else is decoration.
+
+The menu shows rank, title and open contracts under the logo; the run summary
+itemises the experience, every rank and mastery tier reached with its reward, and
+any contract completed.
 
 ## Routes and the descent
 

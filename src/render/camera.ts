@@ -28,6 +28,11 @@ export interface CameraLimits {
   roomHeight: number;
   viewWidth: number;
   viewHeight: number;
+  /**
+   * The part of the view the room is fitted into. Defaults to the whole view; a
+   * portrait phone passes the band above its touch controls.
+   */
+  viewport?: { x: number; y: number; w: number; h: number };
 }
 
 export class Camera {
@@ -53,6 +58,12 @@ export class Camera {
   private readonly noisePhase: number[];
   /** Base zoom that fits the room into the view. */
   private fitZoom = 1;
+  /** Screen point the room centre maps to. */
+  private centerX = 480;
+  private centerY = 270;
+  /** Room size and viewport size, for keeping the lead inside the frame. */
+  private slackX = 0;
+  private slackY = 0;
   private targetZoom = 1;
   private readonly rng = new Rng('camera');
   /** 0 disables shake entirely, from the accessibility setting. */
@@ -65,7 +76,15 @@ export class Camera {
   }
 
   configure(limits: CameraLimits): void {
-    this.fitZoom = Math.min(limits.viewWidth / limits.roomWidth, limits.viewHeight / limits.roomHeight);
+    const port = limits.viewport ?? { x: 0, y: 0, w: limits.viewWidth, h: limits.viewHeight };
+    this.fitZoom = Math.min(port.w / limits.roomWidth, port.h / limits.roomHeight);
+    this.centerX = port.x + port.w / 2;
+    this.centerY = port.y + port.h / 2;
+    // World units of empty view on each side of the room at rest. The lead may
+    // use that, and only a little more: on a portrait phone the room fills the
+    // width exactly, and a full lead pushed a wall off the edge of the screen.
+    this.slackX = Math.max(0, (port.w / this.fitZoom - limits.roomWidth) / 2);
+    this.slackY = Math.max(0, (port.h / this.fitZoom - limits.roomHeight) / 2);
     this.zoom = this.fitZoom;
     this.targetZoom = this.fitZoom;
     this.x = limits.roomWidth / 2;
@@ -109,9 +128,10 @@ export class Camera {
   ): void {
     // Lead toward the ball, capped so the arena never leaves the frame.
     const leadStrength = 0.09 * this.motionScale;
-    const maxLead = 46 * this.motionScale;
-    const targetX = limits.roomWidth / 2 + clamp((ball.x - limits.roomWidth / 2) * leadStrength + ball.vx * 0.02, -maxLead, maxLead);
-    const targetY = limits.roomHeight / 2 + clamp((ball.y - limits.roomHeight / 2) * leadStrength + ball.vy * 0.015, -maxLead, maxLead);
+    const maxLeadX = Math.min(46, this.slackX + 10) * this.motionScale;
+    const maxLeadY = Math.min(46, this.slackY + 10) * this.motionScale;
+    const targetX = limits.roomWidth / 2 + clamp((ball.x - limits.roomWidth / 2) * leadStrength + ball.vx * 0.02, -maxLeadX, maxLeadX);
+    const targetY = limits.roomHeight / 2 + clamp((ball.y - limits.roomHeight / 2) * leadStrength + ball.vy * 0.015, -maxLeadY, maxLeadY);
     this.x = damp(this.x, targetX, 6, dt);
     this.y = damp(this.y, targetY, 6, dt);
 
@@ -144,26 +164,26 @@ export class Camera {
   }
 
   /** Applies the camera transform to a canvas context. */
-  apply(ctx: CanvasRenderingContext2D, viewWidth: number, viewHeight: number): void {
-    ctx.translate(viewWidth / 2 + this.shakeX, viewHeight / 2 + this.shakeY);
+  apply(ctx: CanvasRenderingContext2D, _viewWidth?: number, _viewHeight?: number): void {
+    ctx.translate(this.centerX + this.shakeX, this.centerY + this.shakeY);
     if (this.roll !== 0) ctx.rotate(this.roll);
     ctx.scale(this.zoom, this.zoom);
     ctx.translate(-this.x, -this.y);
   }
 
   /** Converts a screen point to world space, for mouse aiming. */
-  screenToWorld(sx: number, sy: number, viewWidth: number, viewHeight: number): { x: number; y: number } {
+  screenToWorld(sx: number, sy: number, _viewWidth?: number, _viewHeight?: number): { x: number; y: number } {
     return {
-      x: (sx - viewWidth / 2 - this.shakeX) / this.zoom + this.x,
-      y: (sy - viewHeight / 2 - this.shakeY) / this.zoom + this.y,
+      x: (sx - this.centerX - this.shakeX) / this.zoom + this.x,
+      y: (sy - this.centerY - this.shakeY) / this.zoom + this.y,
     };
   }
 
   /** Converts a world point to screen space, ignoring roll. */
-  worldToScreen(wx: number, wy: number, viewWidth: number, viewHeight: number): { x: number; y: number } {
+  worldToScreen(wx: number, wy: number, _viewWidth?: number, _viewHeight?: number): { x: number; y: number } {
     return {
-      x: (wx - this.x) * this.zoom + viewWidth / 2 + this.shakeX,
-      y: (wy - this.y) * this.zoom + viewHeight / 2 + this.shakeY,
+      x: (wx - this.x) * this.zoom + this.centerX + this.shakeX,
+      y: (wy - this.y) * this.zoom + this.centerY + this.shakeY,
     };
   }
 

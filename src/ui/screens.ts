@@ -31,6 +31,8 @@ import { boundName } from '../content/modifiers';
 import { getBiome } from '../content/biomes';
 import { getBallClass } from '../content/balls';
 import { ACHIEVEMENT_DEFS } from '../content/achievements';
+import { MASTERY_NAMES, describeReward, masteryProgress } from '../content/career';
+import { contractText } from '../content/contracts';
 import type { Run } from '../run/run';
 import type { Profile } from '../meta/profile';
 import { bar, button, clear, countUp, el, formatDuration, row, section, starPoints, svgEl, svgIcon } from './dom';
@@ -49,6 +51,10 @@ export interface ScreenHost {
   openMenu: () => void;
   openSettings: () => void;
   openJournal: () => void;
+  /** Leaves the finished run for the career screen. */
+  openCareer: () => void;
+  /** Whether the on-screen touch controls are in use, for control hints. */
+  touch: boolean;
 }
 
 /** Renders the reward offer. Returns the number of selectable options. */
@@ -455,7 +461,9 @@ function routeGraph(
   const graph = el('div', { class: 'bb-map' }, [
     svgEl(
       'svg',
-      { class: 'bb-map-lines', viewBox: `0 0 ${MAP_W} ${MAP_H}`, ariaHidden: 'true', focusable: 'false' },
+      // Stretched with the board: a phone shows it at a taller aspect, and the
+      // tokens are positioned in percentages, so the edges must scale the same way.
+      { class: 'bb-map-lines', viewBox: `0 0 ${MAP_W} ${MAP_H}`, preserveAspectRatio: 'none', ariaHidden: 'true', focusable: 'false' },
       edges.map((e) => e.path),
     ),
     ...tokenNodes,
@@ -666,7 +674,12 @@ export function renderPause(root: HTMLElement, run: Run, host: ScreenHost): void
           },
         }),
       ]),
-      el('p', { class: 'bb-note', text: 'A D steer - Space bounce - Shift brake - S dive - Tab build' }),
+      el('p', {
+        class: 'bb-note',
+        text: host.touch
+          ? 'Stick steers, pull down to dive - tap the right side to bounce'
+          : 'A D steer - Space bounce - Shift brake - S dive - Tab build',
+      }),
     ]),
   );
 }
@@ -712,6 +725,8 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
         gain('Shards', `${formatNumber(telemetry.shardsEarned)}`, `${formatNumber(telemetry.shardsSpent)} spent`),
       ]),
     ]),
+
+    careerSection(run),
 
     towardSection(host.profile),
 
@@ -759,7 +774,8 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
       : null,
 
     row([
-      button({ label: 'New run', hint: 'Enter', onClick: () => { host.playClick(); host.startNewRun(); } }),
+      button({ label: 'New run', hint: 'Enter', className: 'bb-results-again', onClick: () => { host.playClick(); host.startNewRun(); } }),
+      button({ label: 'Career', onClick: () => { host.playClick(); host.openCareer(); } }),
       button({ label: 'Menu', hint: 'Esc', onClick: () => { host.playClick(); host.openMenu(); } }),
     ], 'bb-row-end'),
   ]);
@@ -777,9 +793,11 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
  */
 function towardSection(profile: Profile): HTMLElement | null {
   const goals = profile.unlockGoals();
-  const echoes = profile.balance('echoes');
   const ready = goals.filter((goal) => goal.affordable);
-  const next = goals.find((goal) => !goal.affordable);
+  // The bar is about echoes, the currency every run pays; relic nodes are listed
+  // as ready when affordable but never become "the next thing to save for".
+  const next = goals.find((goal) => !goal.affordable && goal.currency === 'echoes');
+  const echoes = profile.balance('echoes');
   const lines: HTMLElement[] = [];
 
   if (ready.length > 0) {
@@ -822,6 +840,55 @@ function towardSection(profile: Profile): HTMLElement | null {
   }
 
   return lines.length > 0 ? section('Next', lines) : null;
+}
+
+/**
+ * What the run did for the career: experience, rank-ups and their rewards, the
+ * ball's mastery, and any contracts it finished. Present on every summary,
+ * because this is the part that always moves - even a run that died in the first
+ * room earns a sliver of rank.
+ */
+function careerSection(run: Run): HTMLElement | null {
+  const result = run.career;
+  if (!result) return null;
+  const ball = getBallClass(result.mastery.ballId);
+  const mastery = masteryProgress(result.mastery.after);
+  const lines: Array<HTMLElement | null> = [
+    el('div', { class: 'bb-career-gain' }, [
+      el('span', { class: 'bb-rank-badge', text: `${result.rankAfter}` }),
+      el('div', { class: 'bb-career-gain-body' }, [
+        el('div', { class: 'bb-goal-head' }, [
+          el('strong', { class: 'bb-gain-value', text: `+${result.xpTotal}` }),
+          el('span', { text: result.rankAfter > result.rankBefore ? `Rank ${result.rankAfter}!` : `XP - rank ${result.rankAfter}` }),
+        ]),
+        bar(result.fractionAfter, '#b9a0ff'),
+        el('small', { class: 'bb-note', text: result.xpLines.map((line) => `${line.label} ${line.amount}`).join(' - ') }),
+      ]),
+    ]),
+    ...result.rankUps.map((up) =>
+      el('div', { class: 'bb-unlock-row bb-rank-up' }, [el('strong', { text: `Rank ${up.rank}` }), el('em', { text: describeReward(up.reward) || 'Rank up' })]),
+    ),
+    el('div', { class: 'bb-goal', title: `${ball.name} mastery` }, [
+      el('div', { class: 'bb-goal-head' }, [
+        el('strong', { text: `${ball.name} - ${MASTERY_NAMES[mastery.tier] ?? ''}` }),
+        el('span', { text: mastery.span > 0 ? `${mastery.into} / ${mastery.span}` : 'Mastered' }),
+      ]),
+      bar(mastery.fraction, ball.accent),
+    ]),
+    ...result.mastery.tierUps.map((up) =>
+      el('div', { class: 'bb-unlock-row bb-rank-up' }, [
+        el('strong', { text: `${ball.name}: ${MASTERY_NAMES[up.tier] ?? `tier ${up.tier}`}` }),
+        el('em', { text: describeReward(up.reward) }),
+      ]),
+    ),
+    ...result.contracts.map((contract) =>
+      el('div', { class: 'bb-unlock-row' }, [
+        el('strong', { text: `Contract: ${contractText(contract, (id) => getBallClass(id).name)}` }),
+        el('em', { text: 'Complete' }),
+      ]),
+    ),
+  ];
+  return section('Career', lines);
 }
 
 function gain(label: string, value: string, note: string): HTMLElement {

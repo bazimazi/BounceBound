@@ -55,10 +55,18 @@ import {
   UI_FONT,
 } from './paint';
 
+/** The ball's colours: its finish when one is worn, otherwise its class. */
+function ballLook(render: RenderContext): { color: string; accent: string } {
+  if (render.finish && render.finish.color) return render.finish;
+  return getBallClass(render.ballClassId);
+}
+
 export interface RenderContext {
   world: World;
   biome: BiomeDef;
   ballClassId: string;
+  /** Cosmetic finish colours; when absent the ball wears its class colours. */
+  finish?: { color: string; accent: string };
   /** Interpolation alpha between simulation steps. */
   alpha: number;
   /** Real time, for idle animation. */
@@ -91,6 +99,11 @@ export class Renderer {
   private dpr = 1;
   viewWidth = 960;
   viewHeight = 540;
+  /**
+   * Where on screen the room is fitted. The whole view unless the layout says
+   * otherwise (a portrait phone keeps the bottom for its touch controls).
+   */
+  arena: { x: number; y: number; w: number; h: number } | null = null;
 
   private readonly enemyVisuals = new Map<number, EnemyVisual>();
   private lastRoomTime = Number.POSITIVE_INFINITY;
@@ -138,7 +151,12 @@ export class Renderer {
       roomHeight: world.height,
       viewWidth: this.viewWidth,
       viewHeight: this.viewHeight,
+      viewport: this.arena ?? undefined,
     });
+  }
+
+  private get arenaRect(): { x: number; y: number; w: number; h: number } {
+    return this.arena ?? { x: 0, y: 0, w: this.viewWidth, h: this.viewHeight };
   }
 
   private get motion(): boolean {
@@ -296,7 +314,7 @@ export class Renderer {
     // Grid intersections near the ball light up. The ball is the light source of
     // the arena, which ties the protagonist to the space it moves through.
     const ball = world.ball;
-    const ballClass = getBallClass(render.ballClassId);
+    const ballClass = ballLook(render);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     drawGlow(ctx, ballClass.accent, ball.x, ball.y, 300, 0.16);
@@ -1065,7 +1083,7 @@ export class Renderer {
 
   private drawBall(ball: Ball, render: RenderContext): void {
     const ctx = this.ctx;
-    const ballClass = getBallClass(render.ballClassId);
+    const ballClass = ballLook(render);
     const speed = Math.hypot(ball.vx, ball.vy);
     const tier = comboTier(render.world.combo.value);
     const baseTrail = mix(ballClass.color, ballClass.accent, 0.45);
@@ -1665,10 +1683,14 @@ export class Renderer {
    */
   private drawCallouts(): void {
     const ctx = this.ctx;
-    const w = this.viewWidth;
-    const h = this.viewHeight;
+    // Callouts are centred on the arena rather than the screen, and shrink to fit
+    // it, so on a phone they never run off the edge or over the touch controls.
+    const arena = this.arenaRect;
+    const w = arena.w;
+    const h = arena.h;
     const scaleUi = this.settings.uiScale;
     ctx.save();
+    ctx.translate(arena.x, arena.y);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
@@ -1679,7 +1701,7 @@ export class Renderer {
       const slam = this.motion ? 1 + (1 - easeOutCubic(age / 0.16)) * 1.4 : 1;
       const lift = this.motion ? outT * 18 : 0;
       const opacity = clamp01(age / 0.06) * (1 - outT);
-      const size = c.size * scaleUi;
+      const size = Math.min(c.size * scaleUi, (w * 0.92) / Math.max(4, c.text.length * 0.66), h * 0.2);
       const y = h * c.anchor - lift;
 
       // Band: wipes open from the centre.

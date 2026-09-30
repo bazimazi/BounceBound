@@ -70,7 +70,7 @@ export function button(options: ButtonOptions): HTMLButtonElement {
 }
 
 export function bar(fraction: number, color: string, label?: string): HTMLElement {
-  return el('div', { class: 'bb-bar', role: 'progressbar', ariaValuenow: Math.round(fraction * 100) }, [
+  return el('div', { class: `bb-bar${label ? ' bb-bar-labelled' : ''}`, role: 'progressbar', ariaValuenow: Math.round(fraction * 100) }, [
     el('div', { class: 'bb-bar-fill', style: `width:${Math.max(0, Math.min(1, fraction)) * 100}%;background:${color}` }),
     label ? el('span', { class: 'bb-bar-label', text: label }) : null,
   ]);
@@ -188,7 +188,10 @@ export function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Attrs
   const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined || value === false) continue;
-    node.setAttribute(key === 'class' ? 'class' : toKebab(key), String(value));
+    // SVG attribute names are case-sensitive (viewBox, preserveAspectRatio), so
+    // only the aria and data families are converted to kebab case. Converting
+    // everything turned viewBox into view-box, which the browser ignored.
+    node.setAttribute(key.startsWith('aria') || key.startsWith('data') ? toKebab(key) : key, String(value));
   }
   for (const child of children) node.append(child);
   return node;
@@ -254,4 +257,61 @@ export function countUp(nodes: HTMLElement[], options: { duration?: number; stag
     globalThis.requestAnimationFrame(step);
     globalThis.setTimeout(settle, delay + index * stagger + duration + 300);
   });
+}
+
+/* --------------------------------------------------------------- tap tips -- */
+
+/**
+ * Tooltips for fingers.
+ *
+ * The interface keeps its detail in `title` attributes - journal entries, build
+ * chips, locked unlocks, ball silhouettes - which a mouse reveals by hovering and
+ * a phone never reveals at all. This listens for taps on the overlay and, when
+ * the tapped thing carries a title and is not itself a control, shows that title
+ * in a small bubble beside it. A second tap anywhere dismisses it.
+ *
+ * Mouse clicks are ignored: on a desktop the native tooltip already works, and a
+ * bubble on every click would be noise.
+ */
+export function installTapTips(root: HTMLElement): void {
+  let tip: HTMLElement | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const dismiss = (): void => {
+    tip?.remove();
+    tip = null;
+    globalThis.clearTimeout(timer);
+  };
+
+  root.addEventListener('pointerup', (event) => {
+    if (event.pointerType === 'mouse') return;
+    const hadTip = tip !== null;
+    dismiss();
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[title]') : null;
+    if (!target || !root.contains(target)) return;
+    const text = target.getAttribute('title');
+    if (!text) return;
+    // Real controls do their own thing on tap. Disabled ones (marked with
+    // aria-disabled, since a disabled button swallows the tap) explain themselves.
+    const control = target.closest('button, a, input, select, label');
+    if (control && control.getAttribute('aria-disabled') !== 'true') return;
+    if (hadTip && target.dataset.tipOpen === '1') {
+      target.dataset.tipOpen = '0';
+      return;
+    }
+    for (const open of root.querySelectorAll<HTMLElement>('[data-tip-open="1"]')) open.dataset.tipOpen = '0';
+    target.dataset.tipOpen = '1';
+
+    tip = el('div', { class: 'bb-tip', role: 'tooltip', text });
+    document.body.append(tip);
+    const rect = target.getBoundingClientRect();
+    const tipRect = tip.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.min(Math.max(margin, rect.left + rect.width / 2 - tipRect.width / 2), globalThis.innerWidth - tipRect.width - margin);
+    const above = rect.top - tipRect.height - margin;
+    const top = above > margin ? above : Math.min(rect.bottom + margin, globalThis.innerHeight - tipRect.height - margin);
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+    timer = globalThis.setTimeout(dismiss, 4200);
+  });
+  root.addEventListener('scroll', dismiss, { passive: true });
 }

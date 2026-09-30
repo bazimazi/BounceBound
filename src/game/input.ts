@@ -25,6 +25,7 @@
 import { clamp, damp } from '../core/math';
 import { createInput, type InputState } from '../sim/ball';
 import type { Settings } from '../meta/settings';
+import { TouchControls } from './touch';
 
 export type ActionName = 'bounce' | 'brake' | 'dash' | 'pause' | 'build' | 'map' | 'debug' | 'restart' | 'confirm';
 
@@ -58,6 +59,13 @@ export interface InputTargets {
   onFirstInteraction: () => void;
   /** Called when an action is pressed, for UI and menu navigation. */
   onAction: (action: ActionName) => void;
+  /** Called on the first touch, so the game can lay out the touch controls. */
+  onTouchDetected?: () => void;
+}
+
+/** A phone or tablet: the primary pointer is a finger. */
+export function coarsePointer(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
 }
 
 export class InputManager {
@@ -78,11 +86,28 @@ export class InputManager {
   private disposers: Array<() => void> = [];
   /** Exposed so the UI can show the right prompts. */
   usingGamepad = false;
+  /** On-screen controls; drawn by the game, fed by the canvas touch events. */
+  readonly touch: TouchControls;
+  /** A finger has touched the game since the last keyboard input. */
+  private touchSeen = false;
 
   constructor(settings: Settings, targets: InputTargets) {
     this.settings = settings;
     this.targets = targets;
+    this.touch = new TouchControls((role) => targets.onAction(role));
     this.attach();
+  }
+
+  /**
+   * Whether the on-screen controls should show. `auto` means "this is a touch
+   * device, or someone has just touched the screen" - a laptop with a touch
+   * screen gets them after the first tap and loses them again at the first key.
+   */
+  touchActive(): boolean {
+    const mode = this.settings.touchControls;
+    if (mode === 'on') return true;
+    if (mode === 'off') return false;
+    return this.touchSeen || coarsePointer();
   }
 
   updateSettings(settings: Settings): void {
@@ -96,6 +121,7 @@ export class InputManager {
       if (event.code === 'Tab' || event.code === 'Space') event.preventDefault();
       if (event.repeat) return;
       this.firstInteraction();
+      this.touchSeen = false;
       this.held.add(event.code);
       this.pressedThisFrame.add(event.code);
       this.usingGamepad = false;
@@ -139,33 +165,30 @@ export class InputManager {
       this.gamepadIndex = null;
     };
 
-    // Touch: a simple two-zone scheme so the game is at least playable on a
-    // tablet. Left half steers, right half bounces.
-    const onTouch = (event: TouchEvent): void => {
+    // Touch: routed to the on-screen controls (see touch.ts), tracked per finger
+    // so steering and bouncing can happen at the same time.
+    const onTouchStart = (event: TouchEvent): void => {
       this.firstInteraction();
       event.preventDefault();
-      this.held.delete('TouchLeft');
-      this.held.delete('TouchRight');
-      this.held.delete('TouchBounce');
-      for (const touch of Array.from(event.touches)) {
-        const rect = this.targets.canvas.getBoundingClientRect();
-        const relX = (touch.clientX - rect.left) / rect.width;
-        if (relX > 0.55) {
-          if (!this.held.has('TouchBounce')) this.pressedThisFrame.add('TouchBounce');
-          this.held.add('TouchBounce');
-        } else if (relX < 0.22) {
-          this.held.add('TouchLeft');
-        } else {
-          this.held.add('TouchRight');
-        }
+      const firstTouch = !this.touchSeen;
+      this.touchSeen = true;
+      // The controls may not have been showing until this very touch; they need
+      // their geometry before the touch can be classified.
+      if (firstTouch && !this.touch.visible) this.targets.onTouchDetected?.();
+      const rect = this.targets.canvas.getBoundingClientRect();
+      for (const touch of Array.from(event.changedTouches)) {
+        this.touch.touchStart(touch.identifier, touch.clientX - rect.left, touch.clientY - rect.top);
+      }
+    };
+    const onTouchMove = (event: TouchEvent): void => {
+      event.preventDefault();
+      const rect = this.targets.canvas.getBoundingClientRect();
+      for (const touch of Array.from(event.changedTouches)) {
+        this.touch.touchMove(touch.identifier, touch.clientX - rect.left, touch.clientY - rect.top);
       }
     };
     const onTouchEnd = (event: TouchEvent): void => {
-      if (event.touches.length === 0) {
-        this.held.delete('TouchLeft');
-        this.held.delete('TouchRight');
-        this.held.delete('TouchBounce');
-      }
+      for (const touch of Array.from(event.changedTouches)) this.touch.touchEnd(touch.identifier);
     };
 
     globalThis.addEventListener('keydown', onKeyDown);
@@ -178,9 +201,10 @@ export class InputManager {
     this.targets.canvas.addEventListener('mousedown', onMouseDown);
     this.targets.canvas.addEventListener('contextmenu', onContextMenu);
     this.targets.canvas.addEventListener('mouseleave', onLeave);
-    this.targets.canvas.addEventListener('touchstart', onTouch, { passive: false });
-    this.targets.canvas.addEventListener('touchmove', onTouch, { passive: false });
+    this.targets.canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+    this.targets.canvas.addEventListener('touchmove', onTouchMove, { passive: false });
     this.targets.canvas.addEventListener('touchend', onTouchEnd);
+    this.targets.canvas.addEventListener('touchcancel', onTouchEnd);
 
     this.disposers = [
       () => globalThis.removeEventListener('keydown', onKeyDown),
@@ -193,9 +217,10 @@ export class InputManager {
       () => this.targets.canvas.removeEventListener('mousedown', onMouseDown),
       () => this.targets.canvas.removeEventListener('contextmenu', onContextMenu),
       () => this.targets.canvas.removeEventListener('mouseleave', onLeave),
-      () => this.targets.canvas.removeEventListener('touchstart', onTouch),
-      () => this.targets.canvas.removeEventListener('touchmove', onTouch),
+      () => this.targets.canvas.removeEventListener('touchstart', onTouchStart),
+      () => this.targets.canvas.removeEventListener('touchmove', onTouchMove),
       () => this.targets.canvas.removeEventListener('touchend', onTouchEnd),
+      () => this.targets.canvas.removeEventListener('touchcancel', onTouchEnd),
     ];
   }
 
@@ -226,13 +251,19 @@ export class InputManager {
     let targetX = 0;
     let targetY = 0;
     for (const key of this.held) {
-      if (LEFT_KEYS.has(key) || key === 'TouchLeft') targetX -= 1;
-      if (RIGHT_KEYS.has(key) || key === 'TouchRight') targetX += 1;
+      if (LEFT_KEYS.has(key)) targetX -= 1;
+      if (RIGHT_KEYS.has(key)) targetX += 1;
       if (UP_KEYS.has(key)) targetY -= 1;
       if (DOWN_KEYS.has(key)) targetY += 1;
     }
     targetX = clamp(targetX, -1, 1);
     targetY = clamp(targetY, -1, 1);
+
+    const touch = this.touch;
+    if (touch.visible && (touch.moveX !== 0 || touch.moveY !== 0)) {
+      targetX = touch.moveX;
+      targetY = touch.moveY;
+    }
 
     if (pad) {
       // The stick takes priority when it is actually being pushed, so a player can
@@ -251,12 +282,10 @@ export class InputManager {
     state.moveX = Math.abs(this.smoothedX) < 0.02 ? 0 : this.smoothedX;
     state.moveY = Math.abs(this.smoothedY) < 0.02 ? 0 : this.smoothedY;
 
+    // consumePress catches a tap that started and ended since the last frame.
+    const touchBounce = touch.isHeld('bounce') || touch.consumePress('bounce');
     const bounceHeld =
-      this.held.has('Space') ||
-      this.held.has('KeyJ') ||
-      this.held.has('TouchBounce') ||
-      this.held.has('MouseLeft') ||
-      (pad?.bounce ?? false);
+      this.held.has('Space') || this.held.has('KeyJ') || touchBounce || this.held.has('MouseLeft') || (pad?.bounce ?? false);
     // `holdToArm` lets a player hold the button and have it re-arm automatically,
     // which makes the timing mechanic reachable for players who cannot tap
     // precisely. It is strictly an accessibility aid: the window is unchanged.
@@ -267,15 +296,19 @@ export class InputManager {
 
     const brakeAction = this.settings.swapBrakeDash ? 'dash' : 'brake';
     const dashAction = this.settings.swapBrakeDash ? 'brake' : 'dash';
-    state.brakeHeld = this.isActionHeld(brakeAction, pad);
-    const dashHeld = this.isActionHeld(dashAction, pad);
+    state.brakeHeld = this.isActionHeld(brakeAction, pad) || touch.isHeld('brake');
+    const dashHeld = this.isActionHeld(dashAction, pad) || touch.isHeld('dash') || touch.consumePress('dash');
     state.dashPressed = dashHeld && !this.dashWasHeld;
     this.dashWasHeld = dashHeld;
 
     // Aim: mouse when present, right stick otherwise, movement direction as a
     // fallback so the dash always has a sensible direction.
     const ball = this.targets.ballPosition();
-    if (pad && (Math.abs(pad.aimX) > 0.2 || Math.abs(pad.aimY) > 0.2)) {
+    if (touch.visible && touch.aiming) {
+      state.aimX = touch.aimX;
+      state.aimY = touch.aimY;
+      state.aiming = true;
+    } else if (pad && (Math.abs(pad.aimX) > 0.2 || Math.abs(pad.aimY) > 0.2)) {
       const len = Math.hypot(pad.aimX, pad.aimY) || 1;
       state.aimX = pad.aimX / len;
       state.aimY = pad.aimY / len;

@@ -18,11 +18,31 @@ import { PersistentStore, SaveScheduler, type KeyValueStorage, type LoadOutcome 
 import { clamp } from '../core/math';
 import type { CurrencyId } from '../content/ids';
 import { ACHIEVEMENT_BY_ID, ACHIEVEMENT_DEFS, PER_RUN_COUNTERS, type AchievementDef } from '../content/achievements';
-import { UNLOCK_BY_ID, UNLOCK_NODES, maxRanks, nodeCost, type UnlockNode } from '../content/unlocks';
+import { UNLOCK_BY_ID, UNLOCK_NODES, maxRanks, nodeCost, nodeCurrency, type UnlockNode } from '../content/unlocks';
+import { BALL_CLASSES, getBallClass } from '../content/balls';
+import {
+  FINISH_BY_ID,
+  masteryReward,
+  masteryTier,
+  rankReward,
+  runExperience,
+  xpToNextRank,
+  type CareerReward,
+  type RunSummary,
+} from '../content/career';
+import {
+  CONTRACT_REWARDS,
+  applyRunToContracts,
+  dayKey,
+  isContractKind,
+  rollContracts,
+  type Contract,
+  type ContractDay,
+} from '../content/contracts';
 import type { StatModifiers } from '../sim/stats';
 import { defaultSettings, mergeSettings, type Settings } from './settings';
 
-export const PROFILE_VERSION = 3;
+export const PROFILE_VERSION = 4;
 
 export interface RunRecord {
   at: number;
@@ -56,6 +76,56 @@ export interface DiscoveryLog {
   secrets: string[];
 }
 
+/**
+ * The career: rank, mastery, contracts and cosmetics. See `content/career`.
+ * Kept in one record so an older profile gains the whole thing in one repair.
+ */
+export interface CareerData {
+  rank: number;
+  /** Experience into the current rank. */
+  xp: number;
+  /** Every point ever earned, for the statistics line. */
+  totalXp: number;
+  title: string;
+  titles: string[];
+  finish: string;
+  finishes: string[];
+  /** Ball class id -> cumulative mastery experience. */
+  mastery: Record<string, number>;
+  /** Ball classes that have completed a run. */
+  ballsWon: string[];
+  contracts: ContractDay | null;
+}
+
+export function createCareer(): CareerData {
+  return {
+    rank: 1,
+    xp: 0,
+    totalXp: 0,
+    title: '',
+    titles: [],
+    finish: 'class',
+    finishes: ['class'],
+    mastery: {},
+    ballsWon: [],
+    contracts: null,
+  };
+}
+
+/** Everything a finished run moved on the career, for the summary screen. */
+export interface CareerResult {
+  xpLines: Array<{ label: string; amount: number }>;
+  xpTotal: number;
+  rankBefore: number;
+  rankAfter: number;
+  /** Fraction into the rank, before and after, for the animated bar. */
+  fractionBefore: number;
+  fractionAfter: number;
+  rankUps: Array<{ rank: number; reward: CareerReward }>;
+  mastery: { ballId: string; before: number; after: number; tierUps: Array<{ tier: number; reward: CareerReward }> };
+  contracts: Contract[];
+}
+
 export interface ProfileData {
   version: number;
   currencies: Record<CurrencyId, number>;
@@ -74,6 +144,7 @@ export interface ProfileData {
   history: RunRecord[];
   totalPlaySeconds: number;
   createdAt: number;
+  career: CareerData;
 }
 
 function emptyDiscovery(): DiscoveryLog {
@@ -96,7 +167,49 @@ export function createProfileData(): ProfileData {
     history: [],
     totalPlaySeconds: 0,
     createdAt: Date.now(),
+    career: createCareer(),
   };
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? [...new Set(value.filter((v): v is string => typeof v === 'string'))] : [];
+}
+
+function sanitiseCareer(input: unknown): CareerData {
+  const out = createCareer();
+  if (!input || typeof input !== 'object') return out;
+  const raw = input as Partial<CareerData>;
+  const count = (value: unknown, min: number): number =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.max(min, Math.floor(value)) : min;
+  out.rank = clamp(count(raw.rank, 1), 1, 999);
+  out.xp = Math.min(count(raw.xp, 0), xpToNextRank(out.rank) - 1);
+  out.totalXp = count(raw.totalXp, 0);
+  out.titles = strings(raw.titles);
+  out.title = typeof raw.title === 'string' && out.titles.includes(raw.title) ? raw.title : '';
+  out.finishes = ['class', ...strings(raw.finishes).filter((id) => id !== 'class' && FINISH_BY_ID[id])];
+  out.finish = typeof raw.finish === 'string' && out.finishes.includes(raw.finish) ? raw.finish : 'class';
+  if (raw.mastery && typeof raw.mastery === 'object') {
+    for (const [id, xp] of Object.entries(raw.mastery)) {
+      if (BALL_CLASSES.some((b) => b.id === id)) out.mastery[id] = count(xp, 0);
+    }
+  }
+  out.ballsWon = strings(raw.ballsWon).filter((id) => BALL_CLASSES.some((b) => b.id === id));
+  const day = raw.contracts;
+  if (day && typeof day === 'object' && typeof day.day === 'string' && Array.isArray(day.contracts)) {
+    const contracts = day.contracts
+      .filter((c): c is Contract => !!c && typeof c === 'object' && isContractKind((c as Contract).kind))
+      .slice(0, 3)
+      .map((c, index) => ({
+        kind: c.kind,
+        tier: typeof c.tier === 'number' ? clamp(Math.floor(c.tier), 0, 2) : index,
+        target: Math.max(1, count(c.target, 1)),
+        ballId: typeof c.ballId === 'string' ? c.ballId : '',
+        progress: count(c.progress, 0),
+        done: !!c.done,
+      }));
+    if (contracts.length === 3) out.contracts = { day: day.day, contracts };
+  }
+  return out;
 }
 
 /**
@@ -157,6 +270,7 @@ function sanitise(input: unknown): ProfileData | null {
   out.boundLevel = typeof raw.boundLevel === 'number' ? clamp(Math.floor(raw.boundLevel), 0, 20) : 0;
   out.lastSeed = typeof raw.lastSeed === 'string' ? raw.lastSeed : '';
   out.totalPlaySeconds = typeof raw.totalPlaySeconds === 'number' ? Math.max(0, raw.totalPlaySeconds) : 0;
+  out.career = sanitiseCareer(raw.career);
 
   if (Array.isArray(raw.history)) {
     out.history = raw.history
@@ -184,6 +298,13 @@ function sanitise(input: unknown): ProfileData | null {
   }
 
   return out;
+}
+
+export interface UnlockGoal {
+  node: UnlockNode;
+  cost: number;
+  currency: 'echoes' | 'relics';
+  affordable: boolean;
 }
 
 export interface AchievementUnlockResult {
@@ -309,7 +430,11 @@ export class Profile {
         return { ok: false, reason: `Requires ${UNLOCK_BY_ID[req]?.name ?? req}`, cost };
       }
     }
-    if (this.balance('echoes') < cost) return { ok: false, reason: `Needs ${cost} echoes`, cost };
+    const currency = nodeCurrency(node);
+    if (this.balance(currency) < cost) {
+      const unit = currency === 'relics' ? (cost === 1 ? 'relic' : 'relics') : 'echoes';
+      return { ok: false, reason: `Needs ${cost} ${unit}`, cost };
+    }
     return { ok: true, reason: '', cost };
   }
 
@@ -318,7 +443,7 @@ export class Profile {
     if (!node) return false;
     const check = this.canPurchase(node);
     if (!check.ok) return false;
-    if (!this.spend('echoes', check.cost)) return false;
+    if (!this.spend(nodeCurrency(node), check.cost)) return false;
     this.data.unlockRanks[nodeId] = this.ranksOf(nodeId) + 1;
     for (const gate of node.grants ?? []) this.grant(gate);
     this.markDirty();
@@ -330,13 +455,14 @@ export class Profile {
    * that is not yet owned, cheapest first. The results screen uses this so a run
    * always ends pointing at a concrete next unlock rather than a bare balance.
    */
-  unlockGoals(): Array<{ node: UnlockNode; cost: number; affordable: boolean }> {
-    const goals: Array<{ node: UnlockNode; cost: number; affordable: boolean }> = [];
+  unlockGoals(): UnlockGoal[] {
+    const goals: UnlockGoal[] = [];
     for (const node of UNLOCK_NODES) {
       if (node.planned || this.ranksOf(node.id) >= maxRanks(node)) continue;
       if (!node.requires.every((req) => this.ranksOf(req) > 0)) continue;
       const cost = nodeCost(node, this.ranksOf(node.id));
-      goals.push({ node, cost, affordable: this.balance('echoes') >= cost });
+      const currency = nodeCurrency(node);
+      goals.push({ node, cost, currency, affordable: this.balance(currency) >= cost });
     }
     return goals.sort((a, b) => a.cost - b.cost);
   }
@@ -455,6 +581,142 @@ export class Profile {
     this.record('bestCombo', record.bestCombo);
     this.markDirty();
     this.flush();
+  }
+
+  /* ---------------------------------------------------------------- career -- */
+
+  get career(): CareerData {
+    return this.data.career;
+  }
+
+  /** Progress into the current rank, 0..1. */
+  rankFraction(): number {
+    return this.career.xp / xpToNextRank(this.career.rank);
+  }
+
+  masteryOf(ballId: string): number {
+    return this.career.mastery[ballId] ?? 0;
+  }
+
+  private grantCareerReward(reward: CareerReward): void {
+    const career = this.career;
+    if (reward.echoes) this.addCurrency('echoes', reward.echoes);
+    if (reward.relics) this.addCurrency('relics', reward.relics);
+    if (reward.title && !career.titles.includes(reward.title)) {
+      career.titles.push(reward.title);
+      // A new title is worn straight away: the player just earned it, and the
+      // menu is where they will see it.
+      career.title = reward.title;
+    }
+    if (reward.finish && !career.finishes.includes(reward.finish)) career.finishes.push(reward.finish);
+    this.markDirty();
+  }
+
+  /** Adds career experience and pays every rank reached. */
+  addExperience(amount: number): Array<{ rank: number; reward: CareerReward }> {
+    const career = this.career;
+    const ups: Array<{ rank: number; reward: CareerReward }> = [];
+    const gained = Math.max(0, Math.floor(amount));
+    career.xp += gained;
+    career.totalXp += gained;
+    while (career.xp >= xpToNextRank(career.rank)) {
+      career.xp -= xpToNextRank(career.rank);
+      career.rank++;
+      const reward = rankReward(career.rank);
+      this.grantCareerReward(reward);
+      ups.push({ rank: career.rank, reward });
+    }
+    this.record('careerRank', career.rank);
+    this.markDirty();
+    return ups;
+  }
+
+  /** Adds mastery experience for one ball class and pays every tier reached. */
+  addMastery(ballId: string, amount: number): Array<{ tier: number; reward: CareerReward }> {
+    const career = this.career;
+    const before = this.masteryOf(ballId);
+    const after = before + Math.max(0, Math.floor(amount));
+    career.mastery[ballId] = after;
+    const ups: Array<{ tier: number; reward: CareerReward }> = [];
+    const name = getBallClass(ballId).name;
+    for (let tier = masteryTier(before) + 1; tier <= masteryTier(after); tier++) {
+      const reward = masteryReward(tier, name);
+      this.grantCareerReward(reward);
+      ups.push({ tier, reward });
+    }
+    this.record('bestMastery', masteryTier(after));
+    this.markDirty();
+    return ups;
+  }
+
+  /**
+   * Today's contracts, rolling a fresh set when the day has changed. Rolled once
+   * and stored, so unlocking a ball mid-day cannot change what was offered.
+   */
+  contractDay(now = new Date()): ContractDay {
+    const today = dayKey(now);
+    const career = this.career;
+    if (!career.contracts || career.contracts.day !== today) {
+      const balls = BALL_CLASSES.filter((b) => !b.unlock || this.isUnlocked(b.unlock)).map((b) => b.id);
+      career.contracts = rollContracts(today, balls, this.data.selectedBall);
+      this.markDirty();
+    }
+    return career.contracts;
+  }
+
+  wearTitle(title: string): void {
+    if (title !== '' && !this.career.titles.includes(title)) return;
+    this.career.title = title;
+    this.markDirty();
+  }
+
+  wearFinish(id: string): void {
+    if (!this.career.finishes.includes(id)) return;
+    this.career.finish = id;
+    this.markDirty();
+  }
+
+  /**
+   * Applies a finished run to the career: contracts first (their experience is
+   * part of the run's payout), then rank, then the ball's mastery.
+   */
+  applyRunProgress(summary: RunSummary, now = new Date()): CareerResult {
+    const career = this.career;
+    const rankBefore = career.rank;
+    const fractionBefore = this.rankFraction();
+    const xpLines = runExperience(summary);
+
+    const completed = applyRunToContracts(this.contractDay(now), summary);
+    for (const contract of completed) {
+      const reward = CONTRACT_REWARDS[contract.tier] ?? CONTRACT_REWARDS[0];
+      this.addCurrency('echoes', reward.echoes);
+      if (reward.relics) this.addCurrency('relics', reward.relics);
+      xpLines.push({ label: 'Contract', amount: reward.xp });
+      this.bump('contractsCompleted');
+    }
+
+    const xpTotal = xpLines.reduce((sum, line) => sum + line.amount, 0);
+    const rankUps = this.addExperience(xpTotal);
+    const masteryBefore = this.masteryOf(summary.ballId);
+    const tierUps = this.addMastery(summary.ballId, xpTotal);
+
+    if (summary.victory && !career.ballsWon.includes(summary.ballId)) {
+      career.ballsWon.push(summary.ballId);
+      this.record('ballsWon', career.ballsWon.length);
+    }
+    this.markDirty();
+
+    return {
+      xpLines,
+      xpTotal,
+      rankBefore,
+      rankAfter: career.rank,
+      fractionBefore,
+      fractionAfter: this.rankFraction(),
+      rankUps,
+      mastery: { ballId: summary.ballId, before: masteryBefore, after: this.masteryOf(summary.ballId), tierUps },
+      contracts: completed,
+    };
   }
 
   get settings(): Settings {

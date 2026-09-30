@@ -485,6 +485,31 @@ describe('the application boots and every screen renders', () => {
     game.stop();
   });
 
+  it('renders the career screen from the menu and wears an earned finish', async () => {
+    const frames = installFrameStub();
+    const { canvas, overlay } = mountDom();
+    const { Game } = await import('../src/game/game');
+    const game = new Game(canvas, overlay);
+    game.start();
+    frames.runFrames(1);
+    game.profileRef.addExperience(2000);
+
+    [...overlay.querySelectorAll('button')].find((b) => b.textContent?.includes('Career'))!.click();
+    frames.runFrames(2);
+    expect(game.currentScreen).toBe('career');
+    expect(overlay.textContent).toContain('Today');
+    expect(overlay.querySelectorAll('.bb-contract').length).toBe(3);
+
+    const owned = [...overlay.querySelectorAll<HTMLButtonElement>('.bb-finish')].find(
+      (b) => !b.classList.contains('bb-finish-locked') && b.textContent?.includes('Ember'),
+    );
+    expect(owned).toBeDefined();
+    owned!.click();
+    frames.runFrames(2);
+    expect(game.profileRef.career.finish).toBe('ember');
+    game.stop();
+  });
+
   it('survives a purchase in the unlock tree', async () => {
     const frames = installFrameStub();
     const { canvas, overlay } = mountDom();
