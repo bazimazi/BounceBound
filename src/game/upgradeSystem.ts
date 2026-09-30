@@ -92,8 +92,20 @@ export const UPGRADE_REGISTRY = new Map<string, UpgradeDef>();
 export function registerUpgrades(defs: UpgradeDef[]): void {
   for (const def of defs) {
     if (UPGRADE_REGISTRY.has(def.id)) throw new Error(`Duplicate upgrade id: ${def.id}`);
-    UPGRADE_REGISTRY.set(def.id, def);
+    UPGRADE_REGISTRY.set(def.id, { ...def, unlock: def.unlock ?? familyGate(def) });
   }
+}
+
+/**
+ * The unlock tree gates whole families rather than naming every card, so a new
+ * transformation or evolution is gated correctly without anyone remembering to
+ * tag it. Cursed cards are gated by the offer itself (`allowCursed`), because an
+ * altar can still force one on a player who never bought Willing Bargains.
+ */
+function familyGate(def: UpgradeDef): string | undefined {
+  if (def.family === 'transformation' && def.rarity !== 'cursed') return 'family_transformation';
+  if (def.evolvesFrom) return 'family_evolution';
+  return undefined;
 }
 
 export function getUpgrade(id: string): UpgradeDef | undefined {

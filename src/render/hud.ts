@@ -437,8 +437,8 @@ function drawResources(hud: HudContext, state: HudState, width: number): void {
 
   ctx.font = `700 10px ${FONT}`;
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  const act = run.map.acts.findIndex((a) => a.nodes.some((n) => n.id === run.currentNode.id)) + 1;
-  const line = [`DEPTH ${act}`, `ROOM ${run.currentNode.layer + 1}`];
+  const act = run.currentAct();
+  const line = [`DEPTH ${act.tier + 1}/${run.map.tiers}`, `ROOM ${run.currentNode.layer + 1}/${act.layers}`];
   if (run.rerollsLeft > 0) line.push(`${run.rerollsLeft} REROLL${run.rerollsLeft > 1 ? 'S' : ''}`);
   ctx.fillText(line.join('  ·  '), x, y + 18);
   if (run.bound.level > 0) {

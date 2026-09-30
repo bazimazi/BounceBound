@@ -246,6 +246,7 @@ export const BOUNCE_UPGRADES: UpgradeDef[] = [
     name: 'Phase Bounce',
     family: 'bounce',
     rarity: 'rare',
+    unlock: 'family_exotic',
     text: 'After a perfect bounce you become intangible briefly, passing through anything.',
     hint: 'Read carefully: intangible means you cannot bounce either.',
     flat: { phaseDuration: 0.3 },

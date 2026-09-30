@@ -303,6 +303,7 @@ export class Profile {
     const ranks = this.ranksOf(node.id);
     const cost = nodeCost(node, ranks);
     if (ranks >= maxRanks(node)) return { ok: false, reason: 'Fully acquired', cost };
+    if (node.planned) return { ok: false, reason: 'Not open yet', cost };
     for (const req of node.requires) {
       if (this.ranksOf(req) <= 0) {
         return { ok: false, reason: `Requires ${UNLOCK_BY_ID[req]?.name ?? req}`, cost };
@@ -322,6 +323,22 @@ export class Profile {
     for (const gate of node.grants ?? []) this.grant(gate);
     this.markDirty();
     return true;
+  }
+
+  /**
+   * What the player is saving toward: every node whose prerequisites are met and
+   * that is not yet owned, cheapest first. The results screen uses this so a run
+   * always ends pointing at a concrete next unlock rather than a bare balance.
+   */
+  unlockGoals(): Array<{ node: UnlockNode; cost: number; affordable: boolean }> {
+    const goals: Array<{ node: UnlockNode; cost: number; affordable: boolean }> = [];
+    for (const node of UNLOCK_NODES) {
+      if (node.planned || this.ranksOf(node.id) >= maxRanks(node)) continue;
+      if (!node.requires.every((req) => this.ranksOf(req) > 0)) continue;
+      const cost = nodeCost(node, this.ranksOf(node.id));
+      goals.push({ node, cost, affordable: this.balance('echoes') >= cost });
+    }
+    return goals.sort((a, b) => a.cost - b.cost);
   }
 
   /** Permanent stat bonuses from purchased tree nodes, as one source. */

@@ -23,7 +23,11 @@ import type { BiomeId } from '../content/ids';
 import { getUpgrade } from '../game/upgradeSystem';
 import type { RunTelemetry } from './run';
 
-export const RUN_SAVE_VERSION = 2;
+/**
+ * Bumped whenever map generation changes shape. A snapshot only stores a seed, so
+ * an older one would silently regenerate a different map under the player.
+ */
+export const RUN_SAVE_VERSION = 3;
 
 export interface RunSnapshot {
   version: number;
@@ -34,6 +38,13 @@ export interface RunSnapshot {
   ballId: string;
   boundLevel: number;
   biomes: BiomeId[];
+  /** The descent as tiers; a tier of two biomes is a fork. */
+  tiers: BiomeId[][];
+  /** Map-shaping unlocks held when the map was generated. */
+  mapGates: string[];
+  earlyShop: boolean;
+  /** Deepest depth the profile had reached before this run began. */
+  bestDepthAtStart: number;
 
   /* position in the run */
   nodeId: number;
@@ -119,6 +130,13 @@ export function sanitiseSnapshot(raw: unknown): RunSnapshot | null {
 
   const number = (value: unknown, fallback: number): number =>
     typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  const biomes = input.biomes.filter((b): b is BiomeId => typeof b === 'string');
+  const tiers = Array.isArray(input.tiers)
+    ? input.tiers
+        .filter((tier): tier is BiomeId[] => Array.isArray(tier))
+        .map((tier) => tier.filter((b): b is BiomeId => typeof b === 'string'))
+        .filter((tier) => tier.length > 0)
+    : [];
 
   return {
     version: RUN_SAVE_VERSION,
@@ -126,7 +144,11 @@ export function sanitiseSnapshot(raw: unknown): RunSnapshot | null {
     seed: input.seed,
     ballId: typeof input.ballId === 'string' ? input.ballId : 'standard',
     boundLevel: Math.max(0, Math.floor(number(input.boundLevel, 0))),
-    biomes: input.biomes.filter((b): b is BiomeId => typeof b === 'string'),
+    biomes,
+    tiers: tiers.length > 0 ? tiers : biomes.map((b) => [b]),
+    mapGates: Array.isArray(input.mapGates) ? input.mapGates.filter((g): g is string => typeof g === 'string') : [],
+    earlyShop: !!input.earlyShop,
+    bestDepthAtStart: Math.max(0, Math.floor(number(input.bestDepthAtStart, 0))),
     nodeId: Math.floor(input.nodeId),
     visitedNodes: Array.isArray(input.visitedNodes) ? input.visitedNodes.filter((n): n is number => typeof n === 'number') : [],
     revealedNodes: Array.isArray(input.revealedNodes) ? input.revealedNodes.filter((n): n is number => typeof n === 'number') : [],
@@ -184,7 +206,7 @@ function sanitiseTelemetry(raw: unknown): RunTelemetry {
 
 /** Short human description used by the Continue button on the menu. */
 export function describeSnapshot(snapshot: RunSnapshot): string {
-  const act = snapshot.biomes.indexOf(snapshot.telemetry.deepestBiome as BiomeId) + 1;
+  const act = snapshot.tiers.findIndex((tier) => tier.includes(snapshot.telemetry.deepestBiome as BiomeId)) + 1;
   return [
     `depth ${Math.max(1, act)}`,
     `${snapshot.telemetry.roomsCleared} rooms`,

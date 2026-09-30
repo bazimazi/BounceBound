@@ -36,13 +36,12 @@ import { BuildState } from '../game/build';
 import { getUpgrade, priceOf, rollOffers, type UpgradeDef } from '../game/upgradeSystem';
 import '../content/upgrades/index';
 import '../content/bosses';
-import { getBiome } from '../content/biomes';
-import { availableBiomes } from '../content/biomes';
+import { getBiome, planDescent } from '../content/biomes';
 import { getBallClass } from '../content/balls';
 import { EVENT_BY_ID, eligibleEvents, type EventChoice, type EventDef, type EventOutcome } from '../content/events';
 import { resolveBound, type ResolvedBound } from '../content/modifiers';
 import type { BiomeId, RoomArchetype } from '../content/ids';
-import { generateMap, choicesFrom, type MapNode, type RunMap } from '../gen/mapgen';
+import { MAP_GATES, actOf, generateMap, choicesFrom, type ActMap, type MapNode, type RunMap } from '../gen/mapgen';
 import { generateRoom, type GeneratedRoom, type Interactable } from '../gen/roomgen';
 import { ROOM_H, ROOM_W } from '../gen/templates';
 import type { Profile } from '../meta/profile';
@@ -113,7 +112,7 @@ export interface RunOptions {
   seed?: string;
   ballId?: string;
   boundLevel?: number;
-  /** Fixed biome list, used by challenge modes. */
+  /** Fixed biome list, one act each, used by challenge modes and tools. */
   biomes?: BiomeId[];
   clock?: Clock;
   /**
@@ -169,7 +168,13 @@ export class Run {
 
   private roomFlags: RoomFlags = freshRoomFlags();
   private seenEvents = new Set<string>();
-  private readonly biomes: BiomeId[];
+  /** The descent this run was generated with; a tier of two biomes is a fork. */
+  readonly tiers: BiomeId[][];
+  /** Map-shaping unlocks this run was generated with. */
+  private readonly mapGates: string[];
+  private readonly earlyShop: boolean;
+  /** Deepest depth the profile had reached before this run, for the echo bonus. */
+  private readonly bestDepthAtStart: number;
   private pendingRewards = 0;
   private goalArmed = false;
   private disposed = false;
@@ -183,21 +188,23 @@ export class Run {
     this.rng = new Rng(`${this.seed}:play`);
     resetWorldIds();
 
-    // A resumed run must use the biome list it was generated with, or the map
-    // would differ from the one the player was routing through.
-    this.biomes =
-      options.restore?.biomes ??
-      options.biomes ??
-      availableBiomes((id) => this.profile.isUnlocked(id))
-        .map((b) => b.id)
-        .slice(0, 3 + Math.min(3, this.profile.counter('runsWon')));
+    // A resumed run must use exactly what its map was generated from, or the map
+    // would differ from the one the player was routing through - including the
+    // map-shaping unlocks, which may have been bought since.
+    const restore = options.restore;
+    const unlocked = (id: string): boolean => this.profile.isUnlocked(id);
+    this.tiers = restore?.tiers ?? options.biomes?.map((b) => [b]) ?? planDescent(unlocked);
+    this.mapGates = restore?.mapGates ?? MAP_GATES.filter(unlocked);
+    this.earlyShop = restore?.earlyShop ?? this.profile.ranksOf('core_reserves') > 0;
+    this.bestDepthAtStart = restore?.bestDepthAtStart ?? this.profile.counter('deepestBiome');
 
     this.map = generateMap({
       seed: this.seed,
-      biomes: this.biomes,
+      tiers: this.tiers,
       boundLevel: this.bound.level,
       extraHiddenChance: this.bound.obscureMap ? 0.35 : 0,
-      guaranteeEarlyShop: this.profile.ranksOf('core_reserves') > 0,
+      guaranteeEarlyShop: this.earlyShop,
+      gates: this.mapGates,
     });
 
     this.build = new BuildState({
@@ -231,13 +238,12 @@ export class Run {
       upgradesTaken: 0,
       rerollsUsed: 0,
       deepestDepth: 0,
-      deepestBiome: this.biomes[0],
+      deepestBiome: this.tiers[0][0],
       damageBySource: {},
       killsBySource: {},
       damageByEffect: {},
     };
 
-    const restore = options.restore;
     const startNode = restore ? this.map.nodesById.get(restore.nodeId) : undefined;
     this.currentNode = startNode ?? this.map.nodesById.get(this.map.acts[0].entranceIds[0])!;
 
@@ -377,7 +383,10 @@ export class Run {
       archetype,
       biome: node.biome,
       depth: node.depth,
-      progress: clamp(node.depth / Math.max(8, this.map.totalRooms * 0.75), 0, 1),
+      // Position along the route actually travelled, never the size of the map:
+      // counting every node meant a fork would halve the difficulty curve. Tuned
+      // so the final boss arrives at three-quarters intensity.
+      progress: clamp((node.depth / Math.max(8, this.map.pathLength - 1)) * 0.75, 0, 1),
       ballRadius: this.build.stats().radius,
       boundLevel: this.bound.level,
       unlocked: (id) => this.profile.isUnlocked(id),
@@ -511,7 +520,7 @@ export class Run {
     this.telemetry.roomsEntered++;
     this.telemetry.deepestDepth = Math.max(this.telemetry.deepestDepth, this.currentNode.depth);
     this.telemetry.deepestBiome = this.currentNode.biome;
-    this.profile.record('deepestBiome', this.biomes.indexOf(this.currentNode.biome) + 1);
+    this.profile.record('deepestBiome', this.currentAct().tier + 1);
     this.build.depth = this.currentNode.depth;
     this.bus.emit('roomEntered', {
       roomIndex: this.currentNode.depth,
@@ -1017,7 +1026,15 @@ export class Run {
       return;
     }
     // Reveal hidden neighbours: routing decisions should be informed decisions.
-    for (const choice of choices) choice.hidden = false;
+    // Cartography sees one step further, so a fork can be judged by what follows.
+    for (const choice of choices) {
+      choice.hidden = false;
+      if (!this.mapGates.includes('map_clarity')) continue;
+      for (const id of choice.next) {
+        const beyond = this.map.nodesById.get(id);
+        if (beyond) beyond.hidden = false;
+      }
+    }
     this.mapChoices = choices;
     this.phase = 'map';
     this.touchUi();
@@ -1093,7 +1110,7 @@ export class Run {
   private onExitReached(): void {
     const archetype: RoomArchetype = this.currentRoom.archetype;
     const bonus =
-      archetype === 'elite' || archetype === 'miniboss' ? 0.9 : archetype === 'boss' ? 1.4 : archetype === 'challenge' ? 0.4 : 0;
+      archetype === 'elite' || archetype === 'miniboss' ? 0.9 : archetype === 'boss' ? 1.4 : archetype === 'challenge' ? 0.6 : 0;
     const count = archetype === 'elite' || archetype === 'miniboss' || archetype === 'boss' ? 2 : 1;
     const noReward = archetype === 'shop' || archetype === 'respite' || archetype === 'event';
     if (noReward) {
@@ -1101,12 +1118,57 @@ export class Run {
       this.openMap();
       return;
     }
+    this.grantRoomBonus(archetype);
     this.pendingRewards += count;
     // `goalArmed` is set first: `presentNextReward` may finish immediately when
     // there is nothing left to offer, and it reads this flag to decide whether to
     // open the route or drop back into play.
     this.goalArmed = true;
     this.presentNextReward(archetype === 'boss' ? 'Depth cleared' : 'Cleared', bonus);
+  }
+
+  /**
+   * What a room pays on top of its upgrade. Without this every filler room paid
+   * the same, so a fork between a Hazard and an Ascent was a coin flip dressed as
+   * a decision. Each now pays in a different currency, as the route hints say.
+   */
+  private grantRoomBonus(archetype: RoomArchetype): void {
+    const depth = this.currentNode.depth;
+    const ball = this.world.ball;
+    switch (archetype) {
+      case 'trap': {
+        const amount = Math.round((10 + depth * 2) * this.build.stats().shardGain * this.bound.rewardScale);
+        this.shards += amount;
+        this.telemetry.shardsEarned += amount;
+        this.notify(`Hazard pay: ${amount} shards`, 'good');
+        break;
+      }
+      case 'traversal': {
+        const amount = Math.round(ball.maxHp * 0.12 * this.bound.healScale);
+        if (amount > 0 && ball.hp < ball.maxHp) {
+          this.world.healBall(amount);
+          this.notify(`Caught your breath: ${amount} integrity`, 'good');
+        }
+        break;
+      }
+      case 'puzzle':
+        this.rerollsLeft++;
+        this.notify('Solved: one more reroll', 'good');
+        break;
+      case 'boss': {
+        // An act boundary is a fresh start in a new biome. Arriving there on the
+        // last few points of integrity made the next biome's first rooms a
+        // formality to die in, so a boss pays back part of what it cost.
+        const amount = Math.round(ball.maxHp * 0.35 * this.bound.healScale);
+        if (amount > 0 && ball.hp < ball.maxHp) {
+          this.world.healBall(amount);
+          this.notify(`The descent restores ${amount} integrity`, 'good');
+        }
+        break;
+      }
+      default:
+        break;
+    }
   }
 
   /* -------------------------------------------------------------------- ending -- */
@@ -1121,12 +1183,19 @@ export class Run {
 
     // Echoes are the payout that makes a failed run worthwhile. They scale with
     // depth reached and Bound level, not with whether the run was won, so a good
-    // attempt that ends badly still moves the profile forward.
-    const depthValue = this.telemetry.roomsCleared * 1.6 + this.telemetry.bossesKilled * 12;
-    const echoes = Math.max(
-      2,
-      Math.round((depthValue + this.telemetry.elitesKilled * 3) * this.bound.rewardScale * (victory ? 1.6 : 1)),
-    );
+    // attempt that ends badly still moves the profile forward. Reaching a depth
+    // for the first time pays a one-off bonus, so the run that finally gets
+    // further than any before it is rewarded as the milestone it is.
+    const scale = this.bound.rewardScale * (victory ? 1.5 : 1);
+    const breakdown: Array<{ label: string; amount: number }> = [
+      { label: 'Rooms', amount: Math.round(this.telemetry.roomsCleared * 2 * scale) },
+      { label: 'Bosses', amount: Math.round(this.telemetry.bossesKilled * 12 * scale) },
+      { label: 'Elites', amount: Math.round(this.telemetry.elitesKilled * 3 * scale) },
+    ];
+    const newDepths = Math.max(0, this.currentAct().tier + 1 - this.bestDepthAtStart);
+    if (newDepths > 0) breakdown.push({ label: newDepths > 1 ? 'New depths' : 'New depth', amount: newDepths * 8 });
+    this.echoBreakdown = breakdown.filter((line) => line.amount > 0);
+    const echoes = Math.max(2, this.echoBreakdown.reduce((sum, line) => sum + line.amount, 0));
     this.profile.addCurrency('echoes', echoes);
     this.profile.addCurrency('relics', this.relics);
 
@@ -1161,6 +1230,8 @@ export class Run {
 
   /** Echoes awarded at the end, shown on the summary. */
   earnedEchoes = 0;
+  /** Where those echoes came from, so the summary can say why. */
+  echoBreakdown: Array<{ label: string; amount: number }> = [];
   newAchievements: ReturnType<Profile['checkAchievements']> = [];
   private everDroppedBelowHalf = false;
 
@@ -1192,7 +1263,11 @@ export class Run {
       seed: this.seed,
       ballId: this.ballId,
       boundLevel: this.bound.level,
-      biomes: this.biomes.slice(),
+      biomes: this.tiers.flat(),
+      tiers: this.tiers.map((tier) => tier.slice()),
+      mapGates: this.mapGates.slice(),
+      earlyShop: this.earlyShop,
+      bestDepthAtStart: this.bestDepthAtStart,
       nodeId: this.currentNode.id,
       visitedNodes: visited,
       revealedNodes: revealed,
@@ -1226,9 +1301,17 @@ export class Run {
     this.bus.clearAll();
   }
 
-  /** Progress through the whole run, 0..1, for the HUD depth indicator. */
+  /**
+   * Progress through the whole run, 0..1, for the HUD depth indicator. Measured
+   * along the route, not across the map: with forks, most nodes are never visited.
+   */
   progress(): number {
-    return clamp(this.currentNode.depth / Math.max(1, this.map.totalRooms - 1), 0, 1);
+    return clamp(this.currentNode.depth / Math.max(1, this.map.pathLength - 1), 0, 1);
+  }
+
+  /** The act the player is in. */
+  currentAct(): ActMap {
+    return actOf(this.map, this.currentNode);
   }
 
   eventDefById(id: string): EventDef | undefined {

@@ -16,6 +16,11 @@
  * Some nodes are deliberately hidden until adjacent. Unknown nodes are drawn from
  * a restricted pool that can never be a boss and never be strictly bad, so
  * gambling on a `?` is a real but fair decision.
+ *
+ * Acts are grouped into *tiers*. A tier with one biome is a straight descent; a
+ * tier with two is a fork, and clearing the previous boss offers the entrances
+ * of both. Unlocking a new biome therefore adds a route choice rather than making
+ * every run longer - the run stays three or four acts, and new content widens it.
  */
 
 import { Rng } from '../core/rng';
@@ -45,6 +50,8 @@ export interface MapNode {
 
 export interface ActMap {
   biome: BiomeId;
+  /** Position in the descent. Acts sharing a tier are alternatives. */
+  tier: number;
   nodes: MapNode[];
   entranceIds: number[];
   bossId: number;
@@ -56,7 +63,12 @@ export interface RunMap {
   acts: ActMap[];
   /** Flat lookup across all acts. */
   nodesById: Map<number, MapNode>;
+  /** Every node on the map, including alternative acts the player will skip. */
   totalRooms: number;
+  /** Rooms on any single route from the first entrance to the final boss. */
+  pathLength: number;
+  /** Number of tiers: how many bosses stand between the player and the end. */
+  tiers: number;
 }
 
 const LAYERS_PER_ACT = 8;
@@ -79,39 +91,62 @@ const SUPPORT: RoomArchetype[] = ['shop', 'respite', 'event'];
  */
 const HIDDEN_POOL: RoomArchetype[] = ['treasure', 'secret', 'combat', 'gamble', 'challenge', 'trap'];
 
+/**
+ * Meta unlocks that change the *shape* of a map. They are passed as a flat list
+ * rather than read from the profile so a run can store exactly the set it was
+ * generated with: buying an unlock between sessions must not reshape a map the
+ * player is halfway through.
+ */
+export const MAP_GATES = ['room_miniboss', 'room_secret', 'more_events', 'map_clarity'] as const;
+
 export interface GenerateMapOptions {
   seed: string;
-  /** Biomes in order; the run ends after the last one's boss. */
-  biomes: BiomeId[];
+  /** Biomes in order, one act each; the run ends after the last one's boss. */
+  biomes?: BiomeId[];
+  /**
+   * The descent as tiers of alternatives. Takes precedence over `biomes`; a tier
+   * holding two biomes is a fork the player chooses between.
+   */
+  tiers?: BiomeId[][];
   boundLevel: number;
   /** Extra hidden nodes unlocked by meta progression. */
   extraHiddenChance?: number;
   /** Meta modifier: guarantees a shop in the first act. */
   guaranteeEarlyShop?: boolean;
+  /** Map-shaping unlocks held. Omitted means all of them. */
+  gates?: readonly string[];
 }
 
 export function generateMap(options: GenerateMapOptions): RunMap {
   const rng = new Rng(`${options.seed}:map`);
+  const tiers = options.tiers ?? (options.biomes ?? ['verdant']).map((b) => [b]);
+  const gates = new Set<string>(options.gates ?? MAP_GATES);
   const acts: ActMap[] = [];
   let nextId = 1;
   let depth = 0;
 
-  for (let actIndex = 0; actIndex < options.biomes.length; actIndex++) {
-    const biome = options.biomes[actIndex];
-    const act = buildAct({
-      rng,
-      biome,
-      actIndex,
-      startId: nextId,
-      startDepth: depth,
-      seed: options.seed,
-      boundLevel: options.boundLevel,
-      extraHiddenChance: options.extraHiddenChance ?? 0,
-      guaranteeShop: (options.guaranteeEarlyShop ?? false) && actIndex === 0,
-    });
-    nextId += act.nodes.length;
-    depth += act.layers;
-    acts.push(act);
+  for (let tier = 0; tier < tiers.length; tier++) {
+    let layers = LAYERS_PER_ACT;
+    for (const biome of tiers[tier]) {
+      const act = buildAct({
+        rng,
+        biome,
+        actIndex: tier,
+        startId: nextId,
+        startDepth: depth,
+        seed: options.seed,
+        boundLevel: options.boundLevel,
+        extraHiddenChance: options.extraHiddenChance ?? 0,
+        guaranteeShop: (options.guaranteeEarlyShop ?? false) && tier === 0,
+        gates,
+      });
+      nextId += act.nodes.length;
+      layers = act.layers;
+      acts.push(act);
+    }
+    // Alternatives share a depth range: whichever the player picks, the room
+    // after its boss is the same distance into the run.
+    depth += layers;
   }
 
   const nodesById = new Map<number, MapNode>();
@@ -122,7 +157,7 @@ export function generateMap(options: GenerateMapOptions): RunMap {
       totalRooms++;
     }
   }
-  return { seed: options.seed, acts, nodesById, totalRooms };
+  return { seed: options.seed, acts, nodesById, totalRooms, pathLength: depth, tiers: tiers.length };
 }
 
 interface BuildActOptions {
@@ -135,6 +170,7 @@ interface BuildActOptions {
   boundLevel: number;
   extraHiddenChance: number;
   guaranteeShop: boolean;
+  gates: Set<string>;
 }
 
 function buildAct(options: BuildActOptions): ActMap {
@@ -227,6 +263,7 @@ function buildAct(options: BuildActOptions): ActMap {
 
   return {
     biome,
+    tier: options.actIndex,
     nodes,
     entranceIds: grid[0].map((n) => n.id),
     bossId: grid[layers - 1][0].id,
@@ -264,7 +301,7 @@ function assignArchetypes(nodes: MapNode[], grid: MapNode[][], rng: Rng, options
     { archetype: 'respite', count: 1, minLayer: 2, maxLayer: layers - 2 },
     { archetype: 'elite', count: options.actIndex === 0 ? 1 : 2, minLayer: 3, maxLayer: layers - 2 },
     { archetype: 'treasure', count: 1, minLayer: 1, maxLayer: layers - 2 },
-    { archetype: 'event', count: 1, minLayer: 1, maxLayer: layers - 2 },
+    { archetype: 'event', count: options.gates.has('more_events') ? 2 : 1, minLayer: 1, maxLayer: layers - 2 },
   ];
 
   for (const quota of quotas) {
@@ -289,11 +326,14 @@ function assignArchetypes(nodes: MapNode[], grid: MapNode[][], rng: Rng, options
     }
   }
 
-  // Fill the rest, biasing toward contrast with siblings.
+  // Fill the rest, biasing toward contrast with siblings. Wardens and Hollows only
+  // exist once they have been unlocked.
+  const power = options.gates.has('room_miniboss') ? POWER : POWER.filter((a) => a !== 'miniboss');
+  const hiddenPool = options.gates.has('room_secret') ? HIDDEN_POOL : HIDDEN_POOL.filter((a) => a !== 'secret');
   const fillers: MapNode[] = [];
   for (const node of nodes) {
     if (assigned.has(node.id)) continue;
-    const pool = node.layer >= 4 && rng.chance(0.24) ? POWER : FILLER;
+    const pool = node.layer >= 4 && rng.chance(0.24) ? power : FILLER;
     const chosen = rng.weighted(pool, (a) => (siblingHas(node, a, byId) ? 0.3 : 1)) ?? rng.pick(pool);
     node.archetype = chosen;
     assigned.add(node.id);
@@ -302,12 +342,18 @@ function assignArchetypes(nodes: MapNode[], grid: MapNode[][], rng: Rng, options
 
   // Hide a few filler nodes to preserve a sense of the unknown. Only fillers, so
   // hiding can never consume a guaranteed room.
+  // Cartography thins the fog; an obscuring Bound level thickens it past the cap.
   const hideCandidates = fillers.filter((n) => n.layer >= 2 && n.layer <= layers - 3);
-  const hideCount = clamp(Math.round(hideCandidates.length * (0.22 + options.extraHiddenChance)), 0, 3);
-  for (const node of rng.sample(hideCandidates, hideCount)) {
-    if (locked.has(node.id)) continue;
+  const hideShare = (options.gates.has('map_clarity') ? 0.1 : 0.22) + options.extraHiddenChance;
+  const hideCap = options.extraHiddenChance > 0 ? 6 : 3;
+  const hidden = rng.sample(hideCandidates, clamp(Math.round(hideCandidates.length * hideShare), 0, hideCap));
+  for (const node of hidden) {
     node.hidden = true;
-    node.archetype = rng.pick(HIDDEN_POOL);
+    node.archetype = rng.pick(hiddenPool);
+  }
+  // Once Hollow Places is unlocked, most acts hide one, so a `?` is worth a look.
+  if (options.gates.has('room_secret') && hidden.length > 0 && !hidden.some((n) => n.archetype === 'secret')) {
+    if (rng.chance(0.55)) rng.pick(hidden).archetype = 'secret';
   }
 }
 
@@ -351,18 +397,63 @@ export function choicesFrom(map: RunMap, node: MapNode): MapNode[] {
     const next = map.nodesById.get(id);
     if (next) out.push(next);
   }
-  // Boss cleared: advance to the next act's entrances.
-  if (out.length === 0) {
-    const actIndex = map.acts.findIndex((a) => a.nodes.some((n) => n.id === node.id));
-    const nextAct = map.acts[actIndex + 1];
-    if (nextAct) {
-      for (const id of nextAct.entranceIds) {
-        const entrance = map.nodesById.get(id);
-        if (entrance) out.push(entrance);
-      }
+  if (out.length > 0) return out.sort((a, b) => a.column - b.column);
+
+  // Boss cleared: advance to the entrances of every act in the next tier. At a
+  // fork that is two biomes' entrances, kept grouped by act so the choice reads
+  // as "which depth" first and "which door" second.
+  const tier = actOf(map, node).tier;
+  for (const act of map.acts) {
+    if (act.tier !== tier + 1) continue;
+    const entrances: MapNode[] = [];
+    for (const id of act.entranceIds) {
+      const entrance = map.nodesById.get(id);
+      if (entrance) entrances.push(entrance);
     }
+    out.push(...entrances.sort((a, b) => a.column - b.column));
   }
-  return out.sort((a, b) => a.column - b.column);
+  return out;
+}
+
+/** Every node reachable forward from `node` within its act, including itself. */
+export function reachableFrom(map: RunMap, node: MapNode): Set<number> {
+  const out = new Set<number>();
+  const queue = [node.id];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (out.has(id)) continue;
+    out.add(id);
+    for (const next of map.nodesById.get(id)?.next ?? []) queue.push(next);
+  }
+  return out;
+}
+
+export interface RouteOutlook {
+  /** Known room types still reachable from here in this act, by count. */
+  counts: Partial<Record<RoomArchetype, number>>;
+  /** Reachable rooms that are still hidden. */
+  unknown: number;
+  /** Rooms left before the boss, counting this one. */
+  roomsToBoss: number;
+}
+
+/**
+ * What a route commits the player to. Everything reachable from `node` inside its
+ * act is counted, so a fork reads as "this side still has an Exchange and a
+ * Wellspring" rather than only as the room immediately ahead.
+ */
+export function routeOutlook(map: RunMap, node: MapNode): RouteOutlook {
+  const counts: Partial<Record<RoomArchetype, number>> = {};
+  let unknown = 0;
+  for (const id of reachableFrom(map, node)) {
+    const other = map.nodesById.get(id);
+    if (!other || other.archetype === 'boss') continue;
+    if (other.hidden) unknown++;
+    else counts[other.archetype] = (counts[other.archetype] ?? 0) + 1;
+  }
+  const act = actOf(map, node);
+  const bossLayer = map.nodesById.get(act.bossId)?.layer ?? node.layer;
+  return { counts, unknown, roomsToBoss: Math.max(1, bossLayer - node.layer) };
 }
 
 /**
@@ -396,11 +487,11 @@ export const ARCHETYPE_LABELS: Record<RoomArchetype, string> = {
 export const ARCHETYPE_HINTS: Record<RoomArchetype, string> = {
   combat: 'Fight. Upgrade.',
   elite: 'One bad enemy. Two upgrades.',
-  trap: 'Hostile geometry. Good pay.',
-  traversal: 'A climb.',
+  trap: 'Hostile geometry. Upgrade and shards.',
+  traversal: 'A climb. Upgrade and a breather.',
   treasure: 'A cache, awkwardly placed.',
-  challenge: 'A constraint. Pays well.',
-  puzzle: 'Geometry. No pressure.',
+  challenge: 'A constraint. Rarer upgrade.',
+  puzzle: 'Geometry. Upgrade and a reroll.',
   shop: 'Three pedestals. Hit to buy.',
   respite: 'Recover integrity.',
   event: 'An altar. Always a trade.',

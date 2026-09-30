@@ -35,7 +35,7 @@ import {
 } from '../sim/propFactory';
 import { getBiome, type BiomeDef } from '../content/biomes';
 import { eligibleElites, eligibleEnemies, type EnemyDef } from '../content/enemies';
-import { bossForBiome } from '../content/bosses';
+import { bossForBiome, type BossDef } from '../content/bosses';
 import type { BiomeId, RoomArchetype } from '../content/ids';
 import { ROOM_H, ROOM_W, templatesFor, type RoomTemplate, type Slot, type TemplateContext } from './templates';
 import { findOpenNear, validateRoom, type ValidationResult } from './validate';
@@ -385,10 +385,20 @@ interface Encounter {
   spent: number;
 }
 
+/**
+ * Which boss holds a boss room. Seeded from the room alone, so it does not depend
+ * on which generation attempt succeeded, and so the route screen can name the
+ * occupant before the player commits to a depth.
+ */
+export function bossOccupant(seed: string, biome: BiomeId, unlocked: (id: string) => boolean): BossDef {
+  const variant = unlocked('boss_variants') ? new Rng(`${seed}:occupant`).next() : undefined;
+  return bossForBiome(biome, variant);
+}
+
 function buildEncounter(rng: Rng, options: GenerateRoomOptions, slots: Slot[]): Encounter {
   const spawns: EnemySpawn[] = [];
   if (options.archetype === 'boss') {
-    const boss = bossForBiome(options.biome);
+    const boss = bossOccupant(options.seed, options.biome, options.unlocked);
     const scaling = enemyScaling(options.depth, options.boundLevel);
     spawns.push({
       defId: boss.id,

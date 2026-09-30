@@ -38,6 +38,11 @@ export interface UnlockNode {
   ranks?: number;
   /** Cost multiplier per rank beyond the first. */
   rankCostScale?: number;
+  /**
+   * Shown in the tree but not yet purchasable, because what it opens has not been
+   * built. Selling a node that does nothing is worse than showing a closed door.
+   */
+  planned?: boolean;
 }
 
 export const UNLOCK_NODES: UnlockNode[] = [
@@ -147,7 +152,7 @@ export const UNLOCK_NODES: UnlockNode[] = [
   {
     id: 'world_citadel',
     name: 'Storm Citadel',
-    description: 'Opens a fourth depth: conductive architecture where arcs reach much further.',
+    description: 'The second depth forks: take the Storm Citadel instead, where arcs and turrets reach much further.',
     branch: 'world',
     cost: 28,
     requires: [],
@@ -156,7 +161,7 @@ export const UNLOCK_NODES: UnlockNode[] = [
   {
     id: 'world_rift',
     name: 'Gravity Rift',
-    description: 'Opens a fifth depth where gravity is weaker and, in places, sideways.',
+    description: 'The third depth forks: take the Gravity Rift instead, where gravity is weaker and, in places, sideways.',
     branch: 'world',
     cost: 40,
     requires: ['world_citadel'],
@@ -165,7 +170,7 @@ export const UNLOCK_NODES: UnlockNode[] = [
   {
     id: 'world_void',
     name: 'The Unbound',
-    description: 'Opens the final depth, where surfaces are provisional and the run ends properly.',
+    description: 'A fourth and final depth past the third boss, where surfaces are provisional and the run ends properly.',
     branch: 'world',
     cost: 60,
     requires: ['world_rift'],
@@ -264,6 +269,7 @@ export const UNLOCK_NODES: UnlockNode[] = [
     cost: 34,
     requires: ['trial_daily'],
     grants: ['mode_bossrush'],
+    planned: true,
   },
   {
     id: 'trial_endless',
@@ -273,6 +279,7 @@ export const UNLOCK_NODES: UnlockNode[] = [
     cost: 42,
     requires: ['trial_bossrush'],
     grants: ['mode_endless'],
+    planned: true,
   },
 
   /* --------------------------------------------------------------- secrets -- */
@@ -284,6 +291,7 @@ export const UNLOCK_NODES: UnlockNode[] = [
     cost: 50,
     requires: ['ability_exotic'],
     grants: ['secret_resonance'],
+    planned: true,
     secret: true,
   },
   {
@@ -294,6 +302,7 @@ export const UNLOCK_NODES: UnlockNode[] = [
     cost: 70,
     requires: ['world_void', 'secret_resonance'],
     grants: ['secret_origin'],
+    planned: true,
     secret: true,
   },
 ];

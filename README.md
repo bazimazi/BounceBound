@@ -10,7 +10,7 @@ fully procedural WebAudio sound. No binary assets of any kind.
 ```bash
 npm install
 npm run dev        # play at the printed localhost URL
-npm test           # 104 tests
+npm test           # 134 tests
 npm run build      # typecheck + production bundle
 ```
 
@@ -118,7 +118,32 @@ Each system follows one rule from the brief:
   converge into an identity the HUD names for you.
 - **Permanent progression widens the game rather than flattening it.** Roughly 70%
   of the unlock tree is "new things exist now"; every power node combined is worth
-  less than two good in-run upgrades.
+  less than two good in-run upgrades. Every content node gates something real: a
+  fresh profile starts without transformations, evolutions, exotic physics,
+  Specialists, Primes, Wardens or Hollows, and each arrives when its node is
+  bought. Nodes whose content is not built yet are shown but cannot be bought.
+
+## Routes and the descent
+
+A run is three depths: Verdant Ruins, Clockwork Foundry, Frozen Abyss. Unlocking
+the Storm Citadel or the Gravity Rift does not make runs longer; it turns the
+second or third act boundary into a **fork**, shown as two act boards side by
+side, each with its rules and the boss that holds it. The Unbound is the one real
+extension: a fourth and final depth. Alternatives share a depth range and never
+repeat a boss on any route.
+
+Every route option shows its **outlook**: glyphs for what is still reachable down
+that branch (Exchange, Wellspring, Cache, Encounter, Elite, unknowns) and the
+number of rooms to the boss. Hovering an option traces that branch on the board.
+Filler rooms pay differently, so a fork between them is a real decision: a Hazard
+pays shards, an Ascent restores some integrity, a Mechanism grants a reroll, and a
+Trial offers a rarer upgrade. Beating a boss restores 35% integrity before the
+next depth.
+
+A run ends pointing forward. Echoes are itemised (rooms, bosses, elites, and a
+one-off bonus the first time a depth is reached), and the summary names the next
+unlock with a progress bar, or says what is already affordable, plus the closest
+unfinished achievement.
 
 ## Determinism
 
@@ -258,11 +283,13 @@ routes, three bosses, meta progression, the journal, achievements, Bound levels,
 and a full accessibility pass. Deliberately still open:
 
 - **Biomes 4-6** (Storm Citadel, Gravity Rift, The Unbound) have palettes, rules,
-  hazard tables and unlock gates, but no dedicated bosses — they currently reuse the
-  first three. One boss each is the next content increment.
-- **Alternate bosses** per biome (`boss_variants`) is gated in the tree but not yet
-  implemented.
-- **Challenge modes** (boss rush, endless, daily leaderboards) are gated and the
-  deterministic seeding they need is in place; the modes themselves are not built.
+  hazard tables and unlock gates, but no dedicated bosses — each borrows the boss of
+  the depth it stands in for (the Unbound closes against the Mirror). One boss each
+  is the next content increment.
+- **Other Occupants** (`boss_variants`) currently swaps a depth's boss for one of
+  the other two; dedicated alternate bosses would make it more than a reshuffle.
+- **Challenge modes** (boss rush, endless) and the **Resonance** secrets are in the
+  tree as closed nodes; the deterministic seeding they need is in place, the modes
+  themselves are not built.
 - **Balance** is measured but not settled. The bot is a floor, not a substitute for
   human playtesting, and the win-rate curve across Bound levels needs real players.

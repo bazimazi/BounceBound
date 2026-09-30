@@ -239,3 +239,31 @@ export function getBiome(id: BiomeId): BiomeDef {
 export function availableBiomes(unlocked: (id: string) => boolean): BiomeDef[] {
   return BIOME_DEFS.filter((b) => !b.unlock || unlocked(b.unlock)).sort((a, b) => a.order - b.order);
 }
+
+/**
+ * The shape of a descent: which biomes can hold each act.
+ *
+ * The three base depths are always the spine. The Storm Citadel and the Gravity
+ * Rift are *alternatives* to the second and third depths, not extra acts, so
+ * unlocking them turns an act boundary into a fork instead of adding eight more
+ * rooms to every run. The Unbound is the one exception: it is a true fourth act,
+ * the proper ending, and only exists once it has been reached for.
+ */
+export const DESCENT: Array<{ spine: BiomeId; alternative?: BiomeId }> = [
+  { spine: 'verdant' },
+  { spine: 'foundry', alternative: 'citadel' },
+  { spine: 'abyss', alternative: 'rift' },
+];
+export const FINALE: BiomeId = 'void';
+
+export function planDescent(unlocked: (id: string) => boolean): BiomeId[][] {
+  const open = (id: BiomeId): boolean => {
+    const unlock = BIOME_BY_ID[id]?.unlock;
+    return !unlock || unlocked(unlock);
+  };
+  const tiers: BiomeId[][] = DESCENT.map(({ spine, alternative }) =>
+    alternative && open(alternative) ? [spine, alternative] : [spine],
+  );
+  if (open(FINALE)) tiers.push([FINALE]);
+  return tiers;
+}

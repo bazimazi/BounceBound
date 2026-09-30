@@ -1480,6 +1480,167 @@ kbd {
   color: var(--bb-warn);
 }
 
+/* A small tracked line above a panel title: where in the descent this is. */
+.bb-kicker {
+  margin: 0 0 0.35rem;
+  font-family: var(--bb-display);
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--bb-accent-hot);
+}
+
+/* Route outlook: what is still reachable down a branch, as glyphs with counts.
+   The boss chip is set apart on the right, because it is a distance, not a room. */
+.bb-outlook {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.55rem;
+  margin-top: 0.2rem;
+}
+
+.bb-outlook-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.18rem;
+  color: var(--node);
+  font-family: var(--bb-display);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.bb-outlook-icon,
+.bb-outlook-icon svg {
+  display: block;
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.bb-outlook-boss {
+  margin-left: auto;
+  opacity: 0.8;
+}
+
+/* Tracing: hovering a route dims the board and lights the branch it commits to. */
+.bb-map-tracing .bb-node:not(.bb-node-path):not(.bb-node-current) {
+  opacity: 0.28;
+}
+
+.bb-map-tracing .bb-map-edge:not(.bb-map-edge-path):not(.bb-map-edge-visited) {
+  opacity: 0.25;
+}
+
+.bb-map-edge-path {
+  stroke: color-mix(in srgb, var(--bb-accent-hot) 75%, white);
+  stroke-width: 2.6;
+  stroke-dasharray: 6 6;
+}
+
+.bb-node-path {
+  border-color: var(--node);
+  box-shadow: 0 0 0.9rem color-mix(in srgb, var(--node) 55%, transparent), 0 0.3rem 0.8rem rgba(0, 0, 0, 0.55);
+}
+
+/* The fork: two depths side by side, each tinted by its own biome accent. */
+.bb-panel-fork {
+  width: min(84rem, 100%);
+}
+
+.bb-forks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.bb-fork {
+  --fork: var(--bb-accent);
+  padding: 0.85rem 0.9rem 0.95rem;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--fork) 12%, transparent), rgba(0, 0, 0, 0.18) 60%);
+  border: 1px solid color-mix(in srgb, var(--fork) 35%, transparent);
+  border-top: 3px solid var(--fork);
+  clip-path: var(--bb-cut-sm);
+  animation: bb-rise 0.45s var(--bb-spring) backwards;
+}
+
+.bb-fork:nth-child(2) {
+  animation-delay: 0.08s;
+}
+
+.bb-fork-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.bb-fork-head h3 {
+  margin: 0;
+  font-family: var(--bb-display);
+  font-weight: 400;
+  font-size: 1.15rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fork);
+}
+
+.bb-fork-head small {
+  color: var(--bb-text-dim);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bb-fork-rules {
+  margin: 0.3rem 0 0.7rem;
+  color: var(--bb-text-dim);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.bb-fork .bb-map {
+  margin-bottom: 0.7rem;
+}
+
+.bb-fork .bb-node {
+  --size: 2rem;
+}
+
+.bb-fork .bb-node-open {
+  --size: 2.4rem;
+}
+
+.bb-fork .bb-node-boss {
+  --size: 2.9rem;
+}
+
+/* Unlock goal on the results screen: the next thing the echoes are for. */
+.bb-goal {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.bb-goal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: baseline;
+}
+
+.bb-goal-head strong {
+  font-family: var(--bb-display);
+  font-weight: 400;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.bb-goal-head span {
+  color: var(--bb-text-dim);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ------------------------------------------------------------- title screen -- */
 
 /*

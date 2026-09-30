@@ -222,8 +222,27 @@ registerEnemyDefs([...BOSS_DEFS, ...BOSS_PART_DEFS]);
 
 export const BOSS_BY_ID: Record<string, BossDef> = Object.fromEntries(BOSS_DEFS.map((d) => [d.id, d]));
 
-export function bossForBiome(biome: BiomeId): BossDef {
-  return BOSS_DEFS.find((d) => d.biome === biome) ?? BOSS_DEFS[0];
+/**
+ * Biomes without a boss of their own borrow the one from the depth they stand in
+ * for, so no route through a fork can meet the same boss twice. The Unbound
+ * closes the run where it began, against the Mirror.
+ */
+const BORROWED_BOSS: Partial<Record<BiomeId, string>> = {
+  citadel: 'boss_crusher',
+  rift: 'boss_architect',
+  void: 'boss_mirror',
+};
+
+/**
+ * The boss holding a biome. `variant` is a roll in [0, 1) supplied once the Other
+ * Occupants unlock is owned: below the threshold, a different boss takes the room.
+ */
+export function bossForBiome(biome: BiomeId, variant?: number): BossDef {
+  const native =
+    BOSS_DEFS.find((d) => d.biome === biome) ?? BOSS_BY_ID[BORROWED_BOSS[biome] ?? ''] ?? BOSS_DEFS[0];
+  if (variant === undefined || variant >= 0.4) return native;
+  const others = BOSS_DEFS.filter((d) => d.id !== native.id);
+  return others[Math.floor((variant / 0.4) * others.length) % others.length] ?? native;
 }
 
 export function isBossDef(id: string): boolean {

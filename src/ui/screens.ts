@@ -13,12 +13,24 @@
  */
 
 import { formatNumber } from '../core/math';
-import { ARCHETYPE_HINTS, ARCHETYPE_LABELS, type MapNode } from '../gen/mapgen';
+import {
+  ARCHETYPE_HINTS,
+  ARCHETYPE_LABELS,
+  actOf,
+  reachableFrom,
+  routeOutlook,
+  type ActMap,
+  type MapNode,
+  type RouteOutlook,
+} from '../gen/mapgen';
+import { bossOccupant } from '../gen/roomgen';
+import type { RoomArchetype } from '../content/ids';
 import { getUpgrade } from '../game/upgradeSystem';
 import { STAT_SPECS, formatStat, type StatKey } from '../sim/stats';
 import { boundName } from '../content/modifiers';
 import { getBiome } from '../content/biomes';
 import { getBallClass } from '../content/balls';
+import { ACHIEVEMENT_DEFS } from '../content/achievements';
 import type { Run } from '../run/run';
 import type { Profile } from '../meta/profile';
 import { bar, button, clear, countUp, el, formatDuration, row, section, starPoints, svgEl, svgIcon } from './dom';
@@ -163,6 +175,12 @@ const MAP_W = 1000;
 const MAP_H = 300;
 
 /**
+ * Room types worth counting ahead of a fork, in the order they are shown. Plain
+ * fights are left out on purpose: every route has them, so they carry no signal.
+ */
+const OUTLOOK_ORDER: RoomArchetype[] = ['shop', 'respite', 'treasure', 'event', 'secret', 'elite', 'miniboss'];
+
+/**
  * The route screen.
  *
  * Shows the whole act as a node graph, entrance on the left and the boss on the
@@ -171,29 +189,51 @@ const MAP_H = 300;
  * the act, the options are for keyboard play and for the one-line hint. Each
  * option states what it is and what it costs or offers, because a routing
  * decision the player cannot reason about is just a button press.
+ *
+ * Each option also carries its *outlook*: what is still reachable down that
+ * branch, as a row of glyphs. Hovering an option traces that branch on the board.
+ * Together they answer the question a fork is really asking - "if I go here, do I
+ * still get to the Exchange before the boss?" - without reading the graph edge by
+ * edge.
+ *
+ * After a boss the screen shows the depth ahead instead of the one just cleared,
+ * and where the descent forks it shows both depths side by side, each with its
+ * rules and its boss, so the choice is made about the biome rather than a door.
  */
 export function renderMap(root: HTMLElement, run: Run, host: ScreenHost): number {
-  const actIndex = run.map.acts.findIndex((a) => a.nodes.some((n) => n.id === run.currentNode.id));
-  const act = run.map.acts[actIndex] ?? run.map.acts[0];
+  const here = run.currentAct();
   const choiceIds = new Set(run.mapChoices.map((c) => c.id));
-  const biome = getBiome(act.biome);
+  const targets: ActMap[] = [];
+  for (const choice of run.mapChoices) {
+    const act = actOf(run.map, choice);
+    if (!targets.includes(act)) targets.push(act);
+  }
+  const crossing = targets.length > 0 && !targets.includes(here);
+  const boards = crossing ? targets : [here];
+  const fork = boards.length > 1;
 
   const choose = (node: MapNode): void => {
     host.playClick();
     run.chooseNode(node.id);
   };
 
-  const { graph, tokens } = routeGraph(act.nodes, run.currentNode.id, choiceIds, choose, host.playHover);
+  const graphs = new Map<ActMap, RouteGraph>();
+  for (const act of boards) {
+    graphs.set(act, routeGraph(act.nodes, run.currentNode.id, choiceIds, choose, host.playHover));
+  }
 
   const options = run.mapChoices.map((node, index) => {
+    const act = actOf(run.map, node);
+    const graph = graphs.get(act);
     const label = node.hidden ? 'Unknown' : ARCHETYPE_LABELS[node.archetype] ?? node.archetype;
+    const outlook = routeOutlook(run.map, node);
     const option = el(
       'button',
       {
         class: `bb-route bb-route-${node.archetype}`,
         type: 'button',
         style: `--node:${node.hidden ? '#9fb3cc' : ARCHETYPE_COLOURS[node.archetype] ?? '#9fb3cc'};--i:${index}`,
-        ariaLabel: `${label}. ${ARCHETYPE_HINTS[node.archetype]}`,
+        ariaLabel: `${label}. ${ARCHETYPE_HINTS[node.archetype]} ${outlookText(outlook)}`,
       },
       [
         el('span', { class: 'bb-route-key', text: `${index + 1}` }),
@@ -201,6 +241,7 @@ export function renderMap(root: HTMLElement, run: Run, host: ScreenHost): number
         el('span', { class: 'bb-route-body' }, [
           el('strong', { text: label }),
           el('small', { text: node.hidden ? 'Could be anything. Not a boss.' : ARCHETYPE_HINTS[node.archetype] }),
+          outlookRow(outlook),
         ]),
       ],
     );
@@ -209,25 +250,113 @@ export function renderMap(root: HTMLElement, run: Run, host: ScreenHost): number
       choose(node);
     });
     option.addEventListener('mouseenter', host.playHover);
-    // Hovering an option lights its node on the board, and vice versa, so the
-    // list and the graph read as one thing.
-    const token = tokens.get(node.id);
-    if (token) linkHover(option, token);
-    return option;
+    // Hovering an option lights its node and traces its branch on the board, and
+    // vice versa, so the list and the graph read as one thing.
+    const token = graph?.tokens.get(node.id);
+    if (token && graph) {
+      const branch = reachableFrom(run.map, node);
+      linkHover(option, token, (on) => graph.trace(on ? branch : null));
+    }
+    return { act, option };
   });
 
-  root.append(
-    el('div', { class: 'bb-panel bb-panel-map' }, [
-      el('header', { class: 'bb-panel-head' }, [
-        el('h2', { text: biome.name }),
-        el('p', { class: 'bb-sub', text: biome.rules }),
+  const optionsFor = (act: ActMap): HTMLElement[] => options.filter((o) => o.act === act).map((o) => o.option);
+  const occupant = (act: ActMap): string => {
+    const boss = run.map.nodesById.get(act.bossId);
+    if (!boss) return '';
+    return bossOccupant(boss.roomSeed, act.biome, (id) => host.profile.isUnlocked(id)).name;
+  };
+
+  const depthLine = (act: ActMap): string => `Depth ${act.tier + 1} of ${run.map.tiers}`;
+  const head = (): HTMLElement => {
+    if (fork) {
+      return el('header', { class: 'bb-panel-head' }, [
+        el('p', { class: 'bb-kicker', text: depthLine(boards[0]) }),
+        el('h2', { text: 'The descent forks' }),
+        el('p', { class: 'bb-sub', text: 'Choose a depth. Each has its own rules and its own boss.' }),
+      ]);
+    }
+    const act = boards[0];
+    const biome = getBiome(act.biome);
+    return el('header', { class: 'bb-panel-head' }, [
+      el('p', { class: 'bb-kicker', text: crossing ? `${depthLine(act)} - held by ${occupant(act)}` : depthLine(act) }),
+      el('h2', { text: biome.name }),
+      el('p', { class: 'bb-sub', text: crossing ? `${biome.tagline} ${biome.rules}` : biome.rules }),
+    ]);
+  };
+
+  const body: HTMLElement[] = fork
+    ? [
+        el(
+          'div',
+          { class: 'bb-forks' },
+          boards.map((act) => {
+            const biome = getBiome(act.biome);
+            return el('section', { class: 'bb-fork', style: `--fork:${biome.palette.accent}` }, [
+              el('header', { class: 'bb-fork-head' }, [
+                el('h3', { text: biome.name }),
+                el('small', { text: `Held by ${occupant(act)}` }),
+              ]),
+              el('p', { class: 'bb-fork-rules', text: biome.rules }),
+              graphs.get(act)!.graph,
+              el('div', { class: 'bb-routes' }, optionsFor(act)),
+            ]);
+          }),
+        ),
+      ]
+    : [graphs.get(boards[0])!.graph, el('div', { class: 'bb-routes bb-routes-row' }, optionsFor(boards[0]))];
+
+  root.append(el('div', { class: `bb-panel bb-panel-map${fork ? ' bb-panel-fork' : ''}` }, [head(), ...body, buildSummaryStrip(run)]));
+  return options.length;
+}
+
+/** The outlook as a row of glyphs with counts, ending in the distance to the boss. */
+function outlookRow(outlook: RouteOutlook): HTMLElement {
+  const chips: HTMLElement[] = [];
+  for (const archetype of OUTLOOK_ORDER) {
+    const count = outlook.counts[archetype] ?? 0;
+    if (count <= 0) continue;
+    chips.push(
+      el('span', { class: 'bb-outlook-chip', style: `--node:${ARCHETYPE_COLOURS[archetype] ?? '#9fb3cc'}` }, [
+        svgIcon(ARCHETYPE_ICONS[archetype] ?? UNKNOWN_ICON, 'bb-outlook-icon'),
+        el('span', { text: `${count}` }),
       ]),
-      graph,
-      el('div', { class: 'bb-routes bb-routes-row' }, options),
-      buildSummaryStrip(run),
+    );
+  }
+  if (outlook.unknown > 0) {
+    chips.push(
+      el('span', { class: 'bb-outlook-chip', style: '--node:#9fb3cc' }, [
+        svgIcon(UNKNOWN_ICON, 'bb-outlook-icon'),
+        el('span', { text: `${outlook.unknown}` }),
+      ]),
+    );
+  }
+  chips.push(
+    el('span', { class: 'bb-outlook-chip bb-outlook-boss', style: `--node:${ARCHETYPE_COLOURS.boss}` }, [
+      svgIcon(ARCHETYPE_ICONS.boss, 'bb-outlook-icon'),
+      el('span', { text: `${outlook.roomsToBoss}` }),
     ]),
   );
-  return options.length;
+  return el('span', { class: 'bb-outlook', title: outlookText(outlook) }, chips);
+}
+
+function outlookText(outlook: RouteOutlook): string {
+  const parts: string[] = [];
+  for (const archetype of OUTLOOK_ORDER) {
+    const count = outlook.counts[archetype] ?? 0;
+    if (count > 0) parts.push(`${count} ${ARCHETYPE_LABELS[archetype]}`);
+  }
+  if (outlook.unknown > 0) parts.push(`${outlook.unknown} unknown`);
+  const ahead = parts.length > 0 ? `Still reachable: ${parts.join(', ')}.` : 'Nothing special left on this branch.';
+  return `${ahead} Boss in ${outlook.roomsToBoss} ${outlook.roomsToBoss === 1 ? 'room' : 'rooms'}.`;
+}
+
+interface RouteGraph {
+  graph: HTMLElement;
+  /** Selectable tokens by node id. */
+  tokens: Map<number, HTMLElement>;
+  /** Highlights a set of nodes and the edges between them; null clears it. */
+  trace: (ids: Set<number> | null) => void;
 }
 
 /**
@@ -241,7 +370,7 @@ function routeGraph(
   choiceIds: Set<number>,
   choose: (node: MapNode) => void,
   playHover: () => void,
-): { graph: HTMLElement; tokens: Map<number, HTMLElement> } {
+): RouteGraph {
   const layerCount = Math.max(1, ...nodes.map((n) => n.layer + 1));
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const position = (node: MapNode): { x: number; y: number } => ({
@@ -252,7 +381,7 @@ function routeGraph(
   // Edges first, so tokens sit on top. Travelled edges are solid, the edges out of
   // the current room march toward the choices, and the rest of the act is a faint
   // dotted suggestion of what lies ahead.
-  const edges: SVGElement[] = [];
+  const edges: Array<{ from: number; to: number; path: SVGElement }> = [];
   for (const node of nodes) {
     for (const nextId of node.next) {
       const target = byId.get(nextId);
@@ -270,16 +399,16 @@ function routeGraph(
           : node.id === currentId && choiceIds.has(target.id)
             ? ' bb-map-edge-open'
             : '';
-      edges.push(
-        svgEl('path', {
-          class: `bb-map-edge${kind}`,
-          d: `M${x1.toFixed(1)} ${y1.toFixed(1)} C${mid.toFixed(1)} ${y1.toFixed(1)} ${mid.toFixed(1)} ${y2.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`,
-        }),
-      );
+      const path = svgEl('path', {
+        class: `bb-map-edge${kind}`,
+        d: `M${x1.toFixed(1)} ${y1.toFixed(1)} C${mid.toFixed(1)} ${y1.toFixed(1)} ${mid.toFixed(1)} ${y2.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`,
+      });
+      edges.push({ from: node.id, to: target.id, path });
     }
   }
 
   const tokens = new Map<number, HTMLElement>();
+  const allTokens = new Map<number, HTMLElement>();
   const tokenNodes = nodes.map((node) => {
     const selectable = choiceIds.has(node.id);
     const current = node.id === currentId;
@@ -303,7 +432,11 @@ function routeGraph(
     };
     const icon = svgIcon(concealed ? UNKNOWN_ICON : ARCHETYPE_ICONS[node.archetype] ?? UNKNOWN_ICON, 'bb-node-icon');
 
-    if (!selectable) return el('span', attrs, [icon]);
+    if (!selectable) {
+      const token = el('span', attrs, [icon]);
+      allTokens.set(node.id, token);
+      return token;
+    }
 
     // Selectable tokens are real buttons, but kept out of the tab order: the
     // numbered route options below already give keyboard players the same choice,
@@ -315,25 +448,40 @@ function routeGraph(
     });
     token.addEventListener('mouseenter', playHover);
     tokens.set(node.id, token);
+    allTokens.set(node.id, token);
     return token;
   });
 
   const graph = el('div', { class: 'bb-map' }, [
-    svgEl('svg', { class: 'bb-map-lines', viewBox: `0 0 ${MAP_W} ${MAP_H}`, ariaHidden: 'true', focusable: 'false' }, edges),
+    svgEl(
+      'svg',
+      { class: 'bb-map-lines', viewBox: `0 0 ${MAP_W} ${MAP_H}`, ariaHidden: 'true', focusable: 'false' },
+      edges.map((e) => e.path),
+    ),
     ...tokenNodes,
   ]);
-  return { graph, tokens };
+
+  const trace = (ids: Set<number> | null): void => {
+    graph.classList.toggle('bb-map-tracing', ids !== null);
+    for (const [id, token] of allTokens) token.classList.toggle('bb-node-path', ids?.has(id) ?? false);
+    for (const edge of edges) {
+      edge.path.classList.toggle('bb-map-edge-path', (ids?.has(edge.from) && ids.has(edge.to)) ?? false);
+    }
+  };
+  return { graph, tokens, trace };
 }
 
-/** Mirrors hover between a route option and its board token. */
-function linkHover(option: HTMLElement, token: HTMLElement): void {
+/** Mirrors hover between a route option and its board token, tracing its branch. */
+function linkHover(option: HTMLElement, token: HTMLElement, trace: (on: boolean) => void): void {
   const on = (): void => {
     option.classList.add('bb-route-hot');
     token.classList.add('bb-node-hot');
+    trace(true);
   };
   const off = (): void => {
     option.classList.remove('bb-route-hot');
     token.classList.remove('bb-node-hot');
+    trace(false);
   };
   for (const target of [option, token]) {
     target.addEventListener('mouseenter', on);
@@ -546,13 +694,17 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
         class: 'bb-sub',
         text: run.victory
           ? `Completed with ${run.build.size} upgrades as ${identity.map((i) => i.name).join(' / ') || 'an improvised build'}`
-          : `${causeText(run.deathCause)} in ${getBiome(telemetry.deepestBiome).name}`,
+          : `${causeText(run.deathCause)} in ${getBiome(telemetry.deepestBiome).name}, depth ${run.currentAct().tier + 1} of ${run.map.tiers}`,
       }),
     ]),
 
     section('Earned', [
       el('div', { class: 'bb-gains' }, [
-        gain('Echoes', `+${run.earnedEchoes}`, 'Permanent currency, spent in the unlock tree'),
+        gain(
+          'Echoes',
+          `+${run.earnedEchoes}`,
+          run.echoBreakdown.map((line) => `${line.label} ${line.amount}`).join(' - ') || 'Spent in the unlock tree',
+        ),
         gain('Rooms cleared', `${telemetry.roomsCleared}`, ''),
         gain('Enemies', `${telemetry.enemiesKilled}`, `${telemetry.elitesKilled} elite`),
         gain('Best combo', `${telemetry.bestCombo}`, `peak multiplier`),
@@ -560,6 +712,8 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
         gain('Shards', `${formatNumber(telemetry.shardsEarned)}`, `${formatNumber(telemetry.shardsSpent)} spent`),
       ]),
     ]),
+
+    towardSection(host.profile),
 
     achievements.length > 0
       ? section(
@@ -614,6 +768,60 @@ export function renderResults(root: HTMLElement, run: Run, host: ScreenHost): vo
   // The payout counts up after the title lands, one number after another, so the
   // eye is walked through what the run earned instead of being handed a table.
   countUp([...panel.querySelectorAll<HTMLElement>('.bb-gain-value')], { delay: 420 });
+}
+
+/**
+ * What the run moved the profile toward. A balance on its own is a number; a
+ * named unlock with a bar is a reason to go again. When something is already
+ * affordable, that is said instead, because the next move is to go and buy it.
+ */
+function towardSection(profile: Profile): HTMLElement | null {
+  const goals = profile.unlockGoals();
+  const echoes = profile.balance('echoes');
+  const ready = goals.filter((goal) => goal.affordable);
+  const next = goals.find((goal) => !goal.affordable);
+  const lines: HTMLElement[] = [];
+
+  if (ready.length > 0) {
+    const names = ready.slice(0, 3).map((goal) => goal.node.name).join(', ');
+    lines.push(
+      el('p', {
+        class: 'bb-note bb-highlight',
+        text: `${ready.length === 1 ? 'Ready to unlock' : `${ready.length} unlocks ready`}: ${names}${ready.length > 3 ? '...' : ''}`,
+      }),
+    );
+  }
+  if (next) {
+    lines.push(
+      el('div', { class: 'bb-goal', title: next.node.description }, [
+        el('div', { class: 'bb-goal-head' }, [
+          el('strong', { text: next.node.name }),
+          el('span', { text: `${formatNumber(echoes)} / ${formatNumber(next.cost)} echoes` }),
+        ]),
+        bar(echoes / next.cost, '#b9a0ff'),
+      ]),
+    );
+  }
+
+  // The closest unfinished achievement, when it is genuinely close: a specific
+  // thing to try next run is worth more than a list of everything left.
+  const near = ACHIEVEMENT_DEFS.filter((def) => !def.secret && !profile.isAchieved(def.id) && def.target > 1)
+    .map((def) => ({ def, progress: profile.achievementProgress(def) }))
+    .filter((entry) => entry.progress.fraction >= 0.4)
+    .sort((a, b) => b.progress.fraction - a.progress.fraction)[0];
+  if (near) {
+    lines.push(
+      el('div', { class: 'bb-goal', title: near.def.description }, [
+        el('div', { class: 'bb-goal-head' }, [
+          el('strong', { text: near.def.name }),
+          el('span', { text: `${formatNumber(near.progress.current)} / ${formatNumber(near.progress.target)}` }),
+        ]),
+        bar(near.progress.fraction, '#ffd15c'),
+      ]),
+    );
+  }
+
+  return lines.length > 0 ? section('Next', lines) : null;
 }
 
 function gain(label: string, value: string, note: string): HTMLElement {
